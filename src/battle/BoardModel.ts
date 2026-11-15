@@ -5,11 +5,6 @@ export interface Pos {
   c: number;
 }
 
-export interface MatchGroup {
-  element: Element;
-  cells: Pos[];
-}
-
 export interface Fall {
   c: number;
   fromR: number;
@@ -26,115 +21,59 @@ export interface Spawn {
 
 type Cell = Element | null;
 
+/** Поле в стиле Spirit Stones: игрок соединяет цепочку соседних (включая диагональ) камней одного цвета. */
 export class BoardModel {
   grid: Cell[][] = [];
 
   constructor(
     readonly cols: number,
     readonly rows: number,
+    readonly minChain: number,
   ) {
     this.fillInitial();
   }
 
   static adjacent(a: Pos, b: Pos): boolean {
-    return Math.abs(a.r - b.r) + Math.abs(a.c - b.c) === 1;
+    return Math.max(Math.abs(a.r - b.r), Math.abs(a.c - b.c)) === 1;
   }
 
   get(p: Pos): Cell {
     return this.grid[p.r][p.c];
   }
 
-  swap(a: Pos, b: Pos): void {
-    const t = this.grid[a.r][a.c];
-    this.grid[a.r][a.c] = this.grid[b.r][b.c];
-    this.grid[b.r][b.c] = t;
-  }
-
   fillInitial(): void {
     do {
-      this.grid = Array.from({ length: this.rows }, () => Array<Cell>(this.cols).fill(null));
-      for (let r = 0; r < this.rows; r++) {
-        for (let c = 0; c < this.cols; c++) {
-          let e: Element;
-          do {
-            e = randomElement();
-          } while (this.wouldMatch(r, c, e));
-          this.grid[r][c] = e;
-        }
-      }
-    } while (!this.hasPossibleMove());
+      this.grid = Array.from({ length: this.rows }, () =>
+        Array.from({ length: this.cols }, () => randomElement() as Cell),
+      );
+    } while (!this.hasChain());
   }
 
-  private wouldMatch(r: number, c: number, e: Element): boolean {
-    const g = this.grid;
-    return (c >= 2 && g[r][c - 1] === e && g[r][c - 2] === e) || (r >= 2 && g[r - 1][c] === e && g[r - 2][c] === e);
-  }
-
-  /** Находит все линии из 3+ камней; пересекающиеся линии одного цвета (L/T-формы) объединяются в одну группу. */
-  findMatches(): MatchGroup[] {
-    const g = this.grid;
-    const runs: Pos[][] = [];
-
-    for (let r = 0; r < this.rows; r++) {
-      let c = 0;
-      while (c < this.cols) {
-        const e = g[r][c];
-        let end = c + 1;
-        while (e && end < this.cols && g[r][end] === e) end++;
-        if (e && end - c >= 3) runs.push(range(c, end).map((cc) => ({ r, c: cc })));
-        c = end;
-      }
-    }
-    for (let c = 0; c < this.cols; c++) {
-      let r = 0;
-      while (r < this.rows) {
-        const e = g[r][c];
-        let end = r + 1;
-        while (e && end < this.rows && g[end][c] === e) end++;
-        if (e && end - r >= 3) runs.push(range(r, end).map((rr) => ({ r: rr, c })));
-        r = end;
-      }
-    }
-
-    const parent = runs.map((_, i) => i);
-    const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
-    const owner = new Map<number, number>();
-    runs.forEach((run, i) => {
-      for (const p of run) {
-        const key = p.r * this.cols + p.c;
-        const o = owner.get(key);
-        if (o === undefined) owner.set(key, i);
-        else parent[find(i)] = find(o);
-      }
-    });
-
-    const groups = new Map<number, Map<number, Pos>>();
-    runs.forEach((run, i) => {
-      const root = find(i);
-      if (!groups.has(root)) groups.set(root, new Map());
-      for (const p of run) groups.get(root)!.set(p.r * this.cols + p.c, p);
-    });
-
-    return [...groups.values()].map((cells) => {
-      const list = [...cells.values()];
-      return { element: this.get(list[0])!, cells: list };
-    });
-  }
-
-  hasPossibleMove(): boolean {
+  /** Есть ли на поле хотя бы одна цепочка длиной minChain. */
+  hasChain(): boolean {
+    const seen = new Uint8Array(this.rows * this.cols);
     for (let r = 0; r < this.rows; r++) {
       for (let c = 0; c < this.cols; c++) {
-        for (const n of [
-          { r, c: c + 1 },
-          { r: r + 1, c },
-        ]) {
-          if (n.r >= this.rows || n.c >= this.cols) continue;
-          const a = { r, c };
-          this.swap(a, n);
-          const ok = this.findMatches().length > 0;
-          this.swap(a, n);
-          if (ok) return true;
+        if (seen[r * this.cols + c]) continue;
+        const e = this.grid[r][c];
+        let size = 0;
+        const stack: Pos[] = [{ r, c }];
+        seen[r * this.cols + c] = 1;
+        while (stack.length) {
+          const p = stack.pop()!;
+          size++;
+          for (let dr = -1; dr <= 1; dr++) {
+            for (let dc = -1; dc <= 1; dc++) {
+              const n = { r: p.r + dr, c: p.c + dc };
+              if (n.r < 0 || n.r >= this.rows || n.c < 0 || n.c >= this.cols) continue;
+              const k = n.r * this.cols + n.c;
+              if (seen[k] || this.grid[n.r][n.c] !== e) continue;
+              seen[k] = 1;
+              stack.push(n);
+            }
+          }
         }
+        if (e && size >= this.minChain) return true;
       }
     }
     return false;
@@ -186,7 +125,7 @@ export class BoardModel {
       for (let r = 0; r < this.rows; r++) {
         for (let c = 0; c < this.cols; c++) this.grid[r][c] = all[r * this.cols + c];
       }
-      if (this.findMatches().length === 0 && this.hasPossibleMove()) return;
+      if (this.hasChain()) return;
     }
     this.fillInitial();
   }
@@ -194,8 +133,4 @@ export class BoardModel {
 
 function randomElement(): Element {
   return ELEMENTS[Math.floor(Math.random() * ELEMENTS.length)];
-}
-
-function range(from: number, to: number): number[] {
-  return Array.from({ length: to - from }, (_, i) => from + i);
 }

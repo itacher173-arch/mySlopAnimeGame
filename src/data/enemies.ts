@@ -17,7 +17,7 @@ export const ENEMIES: Record<string, EnemyDef> = {
     name: 'Сукуна',
     anime: 'Jujutsu Kaisen',
     element: 'dark',
-    hp: 6000,
+    hp: 4500,
     atk: 450,
     cooldown: 3,
   },
