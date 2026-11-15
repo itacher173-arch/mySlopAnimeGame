@@ -1,5 +1,8 @@
 import {
+  CHAPTER_CRYSTALS,
   CHAPTERS,
+  STAGE_CRYSTALS_FIRST,
+  STAGE_CRYSTALS_THREE_STARS,
   STAGES,
   STAGE_GOLD_FIRST,
   STAGE_GOLD_REPEAT,
@@ -8,6 +11,7 @@ import {
   type ChapterDef,
   type StageDef,
 } from '../data/story';
+import { grantStoryHero, storyHeroesFor } from './collection';
 import { Save } from './SaveManager';
 
 export function stageStars(stageId: string): number {
@@ -52,6 +56,10 @@ export function starRules(stage: StageDef): string[] {
 export interface StageResult {
   stars: number;
   gold: number;
+  crystals: number;
+  tickets: number;
+  /** Сюжетные герои, присоединившиеся этой победой. */
+  newHeroes: string[];
   firstClear: boolean;
   /** Награда за главу, если она выдана этой победой. */
   chapterReward?: ChapterDef['reward'];
@@ -66,15 +74,26 @@ export function applyStageWin(stageId: string, stats: BattleStats): StageResult 
   save.story.stars[stageId] = Math.max(prev, stars);
 
   let gold = firstClear ? STAGE_GOLD_FIRST : STAGE_GOLD_REPEAT;
+  let crystals = firstClear ? STAGE_CRYSTALS_FIRST : 0;
+  if (stars === 3 && prev < 3) crystals += STAGE_CRYSTALS_THREE_STARS;
+  const tickets = firstClear ? (stage.ticketReward ?? 0) : 0;
+  const newHeroes = firstClear ? storyHeroesFor({ stage: stageId }) : [];
+
   const ch = chapterOf(stage);
   let chapterReward: StageResult['chapterReward'];
   if (isChapterComplete(ch) && !save.story.chaptersClaimed.includes(ch.id)) {
     save.story.chaptersClaimed.push(ch.id);
     if (!save.story.spiritStones.includes(ch.reward.spiritStone)) save.story.spiritStones.push(ch.reward.spiritStone);
     gold += ch.reward.gold;
+    crystals += CHAPTER_CRYSTALS;
     chapterReward = ch.reward;
+    newHeroes.push(...storyHeroesFor({ chapter: ch.id }));
   }
   save.gold += gold;
+  save.crystals += crystals;
+  save.tickets += tickets;
   Save.write();
-  return { stars, gold, firstClear, chapterReward };
+  // Уже открытых (например, в старых сохранениях) не выдаём повторно.
+  const joined = newHeroes.filter((id) => grantStoryHero(id));
+  return { stars, gold, crystals, tickets, newHeroes: joined, firstClear, chapterReward };
 }

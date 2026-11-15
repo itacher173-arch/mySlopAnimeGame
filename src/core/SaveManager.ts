@@ -1,9 +1,11 @@
-import { CARDS, STARTER_TEAM } from '../data/cards';
+import { CARDS, HERO_IDS, SPIRIT_IDS } from '../data/cards';
 import type { Element } from '../data/elements';
 
 export interface OwnedCard {
   id: string;
   level: number;
+  /** Пробуждения от повторов в призыве, 0–MAX_AWAKENING. */
+  awakening: number;
 }
 
 export interface StoryProgress {
@@ -16,12 +18,21 @@ export interface StoryProgress {
 }
 
 export interface SaveData {
-  version: 2;
+  version: 3;
+  /** Пролог пройден и стартер выбран (старые сохранения — сразу true). */
+  started: boolean;
+  starter: string | null;
   gold: number;
+  crystals: number;
+  /** Билеты бесплатного призыва. */
+  tickets: number;
+  /** Только полученные карты: духи есть всегда, герои — из стартера, сюжета и призыва. */
   cards: Record<string, OwnedCard>;
   /** Состав команды: id карт, первая — лидер. */
   team: string[];
   story: StoryProgress;
+  /** Призывов подряд без нового героя — для гарантии. */
+  pullsSinceNew: number;
 }
 
 const KEY = 'spirit-stones-anime/save';
@@ -33,25 +44,35 @@ function freshStory(): StoryProgress {
 
 function fresh(): SaveData {
   return {
-    version: 2,
+    version: 3,
+    started: false,
+    starter: null,
     gold: 500,
-    cards: Object.fromEntries(Object.keys(CARDS).map((id) => [id, { id, level: 1 }])),
-    team: [...STARTER_TEAM],
+    crystals: 0,
+    tickets: 0,
+    cards: {},
+    team: [],
     story: freshStory(),
+    pullsSinceNew: 0,
   };
 }
 
-/** Старые сохранения (v1) не знают про сюжет — дополняем недостающие поля. */
-function migrate(data: Partial<SaveData>): SaveData {
+/** v1/v2 не знают про сюжет, валюту и стартера. В них была открыта вся коллекция — её и оставляем. */
+function migrate(data: Partial<SaveData> & { version?: number }): SaveData {
   const base = fresh();
-  const story = { ...freshStory(), ...(data.story ?? {}) };
+  const legacy = (data.version ?? 1) < 3;
+  if (legacy) {
+    data.cards ??= {};
+    for (const id of HERO_IDS) data.cards[id] ??= { id, level: 1, awakening: 0 };
+  }
   return {
     ...base,
     ...data,
-    version: 2,
+    version: 3,
+    started: data.started ?? (legacy && (data.team?.length ?? 0) > 0),
     cards: data.cards ?? base.cards,
     team: data.team ?? base.team,
-    story,
+    story: { ...freshStory(), ...(data.story ?? {}) },
   };
 }
 
@@ -68,8 +89,9 @@ export const Save = {
     }
     // Карты могли удалить из data/cards.ts после сохранения.
     for (const id of Object.keys(cache.cards)) if (!CARDS[id]) delete cache.cards[id];
-    // Пока нет призыва, вся коллекция открыта сразу — включая персонажей, добавленных после сохранения.
-    for (const id of Object.keys(CARDS)) cache.cards[id] ??= { id, level: 1 };
+    for (const c of Object.values(cache.cards)) c.awakening ??= 0;
+    // Духи принадлежат игроку всегда — в том числе в сохранениях, сделанных до их появления.
+    for (const id of SPIRIT_IDS) cache.cards[id] ??= { id, level: 1, awakening: 0 };
     cache.team = cache.team.filter((id) => cache!.cards[id]);
     return cache;
   },
@@ -79,7 +101,9 @@ export const Save = {
   },
 
   reset(): void {
-    cache = fresh();
+    cache = null;
+    localStorage.removeItem(KEY);
+    this.get();
     this.write();
   },
 };

@@ -24,6 +24,8 @@ export interface EnemyDef {
   /** Спрайт нарисован смотрящим вправо — в бою (враги справа) его нужно отразить. */
   spriteFacesRight?: boolean;
   traits?: EnemyTrait[];
+  /** Есть портрет assets/enemies/<id>.jpg; иначе в диалогах — верх боевого спрайта. */
+  portrait?: boolean;
 }
 
 export const ENEMIES: Record<string, EnemyDef> = {
@@ -37,6 +39,7 @@ export const ENEMIES: Record<string, EnemyDef> = {
     cooldown: 3,
     rank: 'boss',
     height: 380,
+    portrait: true,
   },
 
   // ---------- Глава 1: Лес Новичков ----------
@@ -45,8 +48,8 @@ export const ENEMIES: Record<string, EnemyDef> = {
     name: 'Слизень',
     anime: 'KonoSuba',
     element: 'water',
-    hp: 300,
-    atk: 45,
+    hp: 220,
+    atk: 40,
     cooldown: 2,
     height: 110,
   },
@@ -55,8 +58,8 @@ export const ENEMIES: Record<string, EnemyDef> = {
     name: 'Гигантская жаба',
     anime: 'KonoSuba',
     element: 'earth',
-    hp: 1300,
-    atk: 130,
+    hp: 1000,
+    atk: 110,
     cooldown: 4,
     height: 230,
   },
@@ -65,8 +68,8 @@ export const ENEMIES: Record<string, EnemyDef> = {
     name: 'Гоблин',
     anime: 'Goblin Slayer',
     element: 'earth',
-    hp: 380,
-    atk: 60,
+    hp: 260,
+    atk: 55,
     cooldown: 3,
     height: 150,
   },
@@ -75,8 +78,8 @@ export const ENEMIES: Record<string, EnemyDef> = {
     name: 'Гоблин-лучник',
     anime: 'Goblin Slayer',
     element: 'fire',
-    hp: 420,
-    atk: 80,
+    hp: 320,
+    atk: 70,
     cooldown: 2,
     height: 150,
   },
@@ -85,8 +88,8 @@ export const ENEMIES: Record<string, EnemyDef> = {
     name: 'Хобгоблин',
     anime: 'Goblin Slayer',
     element: 'earth',
-    hp: 1900,
-    atk: 170,
+    hp: 1500,
+    atk: 150,
     cooldown: 3,
     rank: 'elite',
     height: 250,
@@ -96,8 +99,8 @@ export const ENEMIES: Record<string, EnemyDef> = {
     name: 'Король Гоблинов',
     anime: 'Goblin Slayer',
     element: 'earth',
-    hp: 3000,
-    atk: 170,
+    hp: 2200,
+    atk: 120,
     cooldown: 3,
     rank: 'boss',
     height: 330,
