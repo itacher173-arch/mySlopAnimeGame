@@ -113,4 +113,6 @@ await tap(360, 600);
 await tap(360, 600);
 await sleep(2500);
 await shot('13_boss_dialogue');
-await browser.close();
+// close() иногда зависает в headless Chrome — не ждём дольше пары секунд.
+await Promise.race([browser.close(), sleep(3000)]);
+process.exit(0);

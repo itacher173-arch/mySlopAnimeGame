@@ -1,5 +1,7 @@
 // Автоигра этапа сюжета в headless Chrome: бот ищет длинные цепочки и проводит их мышью.
-// Запуск (dev-сервер должен работать): node scripts/playtest.mjs 1-5 [--max=4] [--shots=/tmp/ss] [--url=http://localhost:5173]
+// Запуск (dev-сервер должен работать): node scripts/playtest.mjs 1-5 [--max=4] [--team=naruto,spirit_water,...] [--level=1]
+//   [--shots=/tmp/ss] [--url=http://localhost:5173]
+// --team подменяет сохранение: только эти карты, все на уровне --level.
 import puppeteer from 'puppeteer-core';
 
 const args = process.argv.slice(2);
@@ -9,6 +11,8 @@ const base = opt('url', 'http://localhost:5173');
 const shots = opt('shots', '');
 const chrome = opt('chrome', '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome');
 const MAX_MOVES = 80;
+const team = opt('team', '');
+const level = Number(opt('level', '1'));
 // --max=4 — ограничить длину цепочки, чтобы бот играл как обычный игрок, а не идеальный.
 const maxChain = Number(opt('max', '9'));
 
@@ -23,6 +27,22 @@ async function play(stageId) {
   const page = await browser.newPage();
   await page.setViewport({ width: 720, height: 1280 });
   page.on('pageerror', (e) => console.error('pageerror:', e.message));
+  if (team) {
+    const ids = team.split(',');
+    const save = {
+      version: 3,
+      started: true,
+      starter: ids[0],
+      gold: 0,
+      crystals: 0,
+      tickets: 0,
+      cards: Object.fromEntries(ids.map((id) => [id, { id, level, awakening: 0 }])),
+      team: ids,
+      story: { stars: {}, chaptersClaimed: [], spiritStones: [] },
+      pullsSinceNew: 0,
+    };
+    await page.evaluateOnNewDocument((json) => localStorage.setItem('spirit-stones-anime/save', json), JSON.stringify(save));
+  }
   await page.goto(`${base}/?scene=Battle&stage=${stageId}`);
   await page.waitForFunction(() => window.game?.scene.getScene('Battle')?.model, { timeout: 15000 });
   await sleep(800);
