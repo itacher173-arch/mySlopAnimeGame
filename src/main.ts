@@ -4,7 +4,9 @@ import { BootScene } from './scenes/BootScene';
 import { BattleScene } from './scenes/BattleScene';
 import { DialogueScene } from './scenes/DialogueScene';
 import { MainMenuScene } from './scenes/MainMenuScene';
+import { StarterSelectScene } from './scenes/StarterSelectScene';
 import { StoryMapScene } from './scenes/StoryMapScene';
+import { SummonScene } from './scenes/SummonScene';
 import { TeamScene } from './scenes/TeamScene';
 import { UpgradeScene } from './scenes/UpgradeScene';
 
@@ -18,7 +20,7 @@ const game = new Phaser.Game({
     mode: Phaser.Scale.FIT,
     autoCenter: Phaser.Scale.CENTER_BOTH,
   },
-  scene: [BootScene, MainMenuScene, TeamScene, UpgradeScene, StoryMapScene, DialogueScene, BattleScene],
+  scene: [BootScene, MainMenuScene, TeamScene, UpgradeScene, StoryMapScene, DialogueScene, BattleScene, StarterSelectScene, SummonScene],
 });
 
 // Доступ из консоли и автотестов (puppeteer).

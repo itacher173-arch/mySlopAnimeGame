@@ -1,15 +1,13 @@
 import Phaser from 'phaser';
 import { FONT, GAME_W } from '../config';
-import { MAX_LEVEL, cardStats, upgradeCost } from '../core/progression';
+import { cardStats, maxLevel, upgradeCost } from '../core/progression';
 import { Save } from '../core/SaveManager';
 import { CARDS } from '../data/cards';
 import { ELEMENT_COLOR, ELEMENT_NAME } from '../data/elements';
+import { collectionGrid } from '../ui/collection';
 import { button, cardView, goldLabel, hex, menuBackground, setButtonEnabled, title } from '../ui/widgets';
 
-const GRID_COLS = 5;
-const GRID_W = 124;
-const GRID_H = 165;
-const GRID_Y = 640;
+const GRID_Y = 600;
 
 export class UpgradeScene extends Phaser.Scene {
   private selectedId = '';
@@ -38,12 +36,12 @@ export class UpgradeScene extends Phaser.Scene {
 
     const owned = save.cards[this.selectedId];
     const def = CARDS[this.selectedId];
-    const stats = cardStats(def, owned.level);
-    const maxed = owned.level >= MAX_LEVEL;
-    const next = cardStats(def, owned.level + 1);
+    const stats = cardStats(def, owned.level, owned.awakening);
+    const maxed = owned.level >= maxLevel(def);
+    const next = cardStats(def, owned.level + 1, owned.awakening);
     const cost = upgradeCost(owned.level);
 
-    this.content.add(cardView(this, 170, 360, 240, 320, def, owned.level));
+    this.content.add(cardView(this, 170, 360, 240, 320, def, owned.level, owned.awakening));
 
     const tx = 320;
     const line = (y: number, text: string, color = '#ffffff', size = 26) =>
@@ -51,7 +49,7 @@ export class UpgradeScene extends Phaser.Scene {
     line(180, def.name, '#ffffff', 36);
     line(228, def.anime, '#c9b8ff', 20);
     line(262, ELEMENT_NAME[def.element], hex(ELEMENT_COLOR[def.element]), 24);
-    line(304, `Уровень: ${owned.level}${maxed ? ' (макс.)' : ` → ${owned.level + 1}`}`);
+    line(304, `Уровень: ${owned.level}${maxed ? ` (макс. ${maxLevel(def)})` : ` → ${owned.level + 1}`}`);
     line(342, `Атака: ${stats.atk}${maxed ? '' : `  (+${next.atk - stats.atk})`}`);
     line(380, `HP: ${stats.hp}${maxed ? '' : `  (+${next.hp - stats.hp})`}`);
 
@@ -59,27 +57,25 @@ export class UpgradeScene extends Phaser.Scene {
     setButtonEnabled(btn, !maxed && save.gold >= cost);
     this.content.add(btn);
 
-    const gx = GAME_W / 2 - ((GRID_COLS - 1) * (GRID_W + 12)) / 2;
-    Object.values(save.cards).forEach((card, i) => {
-      const x = gx + (i % GRID_COLS) * (GRID_W + 12);
-      const y = GRID_Y + Math.floor(i / GRID_COLS) * (GRID_H + 24) + GRID_H / 2;
-      const view = cardView(this, x, y, GRID_W, GRID_H, CARDS[card.id], card.level);
-      if (card.id === this.selectedId) {
-        this.content.add(this.add.rectangle(x, y, GRID_W + 12, GRID_H + 12).setStrokeStyle(5, 0xffe066));
-      }
-      view.setInteractive({ useHandCursor: true }).on('pointerup', () => {
-        this.selectedId = card.id;
-        this.render();
-      });
-      this.content.add(view);
-    });
+    this.content.add(
+      collectionGrid(this, {
+        y: GRID_Y,
+        onPick: (id) => {
+          this.selectedId = id;
+          this.render();
+        },
+        decorate: (view, id) => {
+          if (id === this.selectedId) view.add(this.add.rectangle(0, 0, view.width + 10, view.height + 10).setStrokeStyle(5, 0xffe066));
+        },
+      }),
+    );
   }
 
   private upgrade(): void {
     const save = Save.get();
     const owned = save.cards[this.selectedId];
     const cost = upgradeCost(owned.level);
-    if (owned.level >= MAX_LEVEL || save.gold < cost) return;
+    if (owned.level >= maxLevel(CARDS[this.selectedId]) || save.gold < cost) return;
     save.gold -= cost;
     owned.level++;
     Save.write();

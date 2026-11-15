@@ -9,7 +9,7 @@ import { ELEMENT_COLOR, ELEMENT_NAME, elementMultiplier, type Element } from '..
 import { ENEMIES, type EnemyDef } from '../data/enemies';
 import { STAGES, STAR_HP_RATIO, type StageDef } from '../data/story';
 import { coverImage } from '../ui/images';
-import { button } from '../ui/widgets';
+import { button, cardView } from '../ui/widgets';
 import { STONE_SIZE } from './BootScene';
 
 type Stone = Phaser.GameObjects.Image;
@@ -407,11 +407,11 @@ export class BattleScene extends Phaser.Scene {
     let maxHp = 0;
     save.team.forEach((id, i) => {
       const def = CARDS[id];
-      const stats = cardStats(def, save.cards[id].level);
+      const stats = cardStats(def, save.cards[id].level, save.cards[id].awakening);
       maxHp += stats.hp;
       const { x, y } = TEAM_SLOTS[i];
       this.add.ellipse(x, y, 110, 22, 0x000000, 0.4).setDepth(y / 100 - 0.01);
-      const sprite = this.unitSprite(`unit_${def.id}`, x, y, UNIT_H, def.element, def.name, !!def.spriteFacesLeft);
+      const sprite = this.unitSprite(`unit_${def.id}`, x, y, UNIT_H * (def.battleScale ?? 1), def.element, def.name, !!def.spriteFacesLeft);
       sprite.setDepth(y / 100);
       this.add.image(x, BADGE_Y, `stone_${def.element}`).setScale(0.3).setDepth(BADGE_DEPTH);
       this.breathe(sprite);
@@ -560,20 +560,20 @@ export class BattleScene extends Phaser.Scene {
     this.moves++;
     this.updateInfo();
     const attackers = this.team.filter((u) => u.def.element === element);
-    const target = attackers[0] ?? this.team[0];
+    const target = attackers[0];
+    if (!target) this.floatText(GAME_W / 2, BOARD_Y - 20, 'Нет героя этой стихии', 0xffffff, 30);
 
-    // Камни улетают к герою своей стихии, параллельно поле досыпается сверху.
+    // Камни улетают к герою своей стихии (а без него просто тают), параллельно поле досыпается сверху.
     const absorbs = chain.map((p, i) => {
       const s = this.stones[p.r][p.c]!;
       this.stones[p.r][p.c] = null;
       const fx = this.add.image(s.x, s.y, s.texture.key).setScale(1.12).setDepth(30);
       s.destroy();
+      const to = target ? { x: target.x, y: target.y - UNIT_H / 2, alpha: 0.7 } : { alpha: 0 };
       return this.tween({
         targets: fx,
-        x: target.x,
-        y: target.y - UNIT_H / 2,
+        ...to,
         scale: 0.25,
-        alpha: 0.7,
         delay: i * 40,
         duration: 340,
         ease: 'Quad.easeIn',
@@ -770,15 +770,26 @@ export class BattleScene extends Phaser.Scene {
         const detail = i === 1 ? ` (${Math.round((this.teamHp / this.teamMaxHp) * 100)}%)` : i === 2 ? ` (${this.moves})` : '';
         text(cy - 80 + i * 36, `${stars[i] ? '✔' : '✘'} ${rule}${detail}`, 24, stars[i] ? '#b8ffb8' : '#ff9a9a');
       });
-      text(cy + 40, `+${reward} золота${result.firstClear ? ' (первое прохождение)' : ''}`, 30, '#ffe066');
-      if (result.chapterReward) {
-        text(cy + 90, `Получен Камень Духа: ${ELEMENT_NAME[result.chapterReward.spiritStone]}!`, 30, hex(ELEMENT_COLOR[result.chapterReward.spiritStone]));
+      text(cy + 30, `+${reward} золота${result.firstClear ? ' (первое прохождение)' : ''}`, 28, '#ffe066');
+      const extra = [
+        result.crystals > 0 ? `+${result.crystals} 💎 кристаллов` : '',
+        result.tickets > 0 ? `+${result.tickets} 🎟 билет призыва` : '',
+      ].filter(Boolean);
+      if (extra.length) text(cy + 70, extra.join('   '), 26, '#8fe8ff');
+      let ry = cy + 110;
+      for (const id of result.newHeroes) {
+        text(ry, `Новый герой: ${CARDS[id].name}!`, 28, '#ffb0f0');
+        ry += 38;
       }
+      if (result.chapterReward) {
+        text(ry, `Получен Камень Духа: ${ELEMENT_NAME[result.chapterReward.spiritStone]}!`, 28, hex(ELEMENT_COLOR[result.chapterReward.spiritStone]));
+      }
+      if (result.newHeroes.length) this.time.delayedCall(900, () => this.showNewHero(result.newHeroes[0]));
     } else if (reward > 0) {
       text(cy - 30, `+${reward} золота`, 36, '#ffe066');
     }
 
-    const by = cy + 210;
+    const by = cy + 240;
     if (stage) {
       const toMap = () => this.scene.start('StoryMap', { chapterId: stage.chapter });
       const retry = () => this.scene.restart({ stageId: stage.id });
@@ -793,6 +804,45 @@ export class BattleScene extends Phaser.Scene {
       button(this, cx, by, 320, 96, 'Ещё раз', () => this.scene.restart({})).setDepth(101);
       button(this, cx, by + 120, 320, 96, 'В меню', () => this.scene.start('MainMenu')).setDepth(101);
     }
+  }
+
+  /** Всплывающее окно «Новый герой!» поверх итогов боя; закрывается тапом. */
+  private showNewHero(id: string): void {
+    const def = CARDS[id];
+    const cx = GAME_W / 2;
+    const cy = GAME_H / 2 - 60;
+    const bg = this.add.rectangle(cx, GAME_H / 2, GAME_W, GAME_H, 0x000000, 0.8).setDepth(110).setInteractive();
+    const glow = this.add.circle(cx, cy, 230, ELEMENT_COLOR[def.element], 0.35).setDepth(110);
+    const owned = Save.get().cards[id];
+    const card = cardView(this, cx, cy, 300, 400, def, owned?.level, owned?.awakening).setDepth(111).setScale(0);
+    const inTeam = Save.get().team.includes(id);
+    const parts = [
+      bg,
+      glow,
+      card,
+      this.add
+        .text(cx, cy - 260, 'НОВЫЙ ГЕРОЙ!', { fontFamily: FONT, fontSize: '60px', color: '#ffb0f0' })
+        .setOrigin(0.5)
+        .setStroke('#000000', 10)
+        .setDepth(111),
+      this.add
+        .text(cx, cy + 250, inTeam ? `${def.name} уже в команде!` : `${def.name} ждёт в коллекции`, {
+          fontFamily: FONT,
+          fontSize: '30px',
+          color: '#ffffff',
+        })
+        .setOrigin(0.5)
+        .setStroke('#000000', 7)
+        .setDepth(111),
+      this.add
+        .text(cx, cy + 300, 'Нажми, чтобы продолжить', { fontFamily: FONT, fontSize: '22px', color: '#c9b8ff' })
+        .setOrigin(0.5)
+        .setDepth(111),
+    ];
+    this.tweens.add({ targets: card, scale: 1, duration: 450, ease: 'Back.easeOut' });
+    this.tweens.add({ targets: glow, scale: 1.15, alpha: 0.15, duration: 800, yoyo: true, repeat: -1 });
+    this.burst(cx, cy, ELEMENT_COLOR[def.element]);
+    bg.once('pointerup', () => parts.forEach((p) => p.destroy()));
   }
 
   // ---------- помощники ----------

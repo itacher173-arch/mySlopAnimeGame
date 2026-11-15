@@ -2,15 +2,13 @@ import Phaser from 'phaser';
 import { FONT, GAME_W } from '../config';
 import { Save, TEAM_SIZE } from '../core/SaveManager';
 import { CARDS } from '../data/cards';
+import { collectionGrid } from '../ui/collection';
 import { button, cardView, menuBackground, title } from '../ui/widgets';
 
 const SLOT_W = 124;
 const SLOT_H = 165;
 const SLOT_Y = 250;
-const GRID_COLS = 4;
-const GRID_W = 150;
-const GRID_H = 200;
-const GRID_Y = 560;
+const GRID_Y = 500;
 
 export class TeamScene extends Phaser.Scene {
   private selectedSlot = 0;
@@ -26,7 +24,7 @@ export class TeamScene extends Phaser.Scene {
     title(this, 'Команда');
     button(this, 80, 60, 120, 64, 'Назад', () => this.scene.start('MainMenu'));
     this.add
-      .text(GAME_W / 2, 470, 'Выбери слот, затем персонажа из коллекции', {
+      .text(GAME_W / 2, 455, 'Выбери слот, затем персонажа из коллекции', {
         fontFamily: FONT,
         fontSize: '22px',
         color: '#c9b8ff',
@@ -46,7 +44,7 @@ export class TeamScene extends Phaser.Scene {
       const x = startX + i * (SLOT_W + 12);
       const id = save.team[i];
       const slot = id
-        ? cardView(this, x, SLOT_Y, SLOT_W, SLOT_H, CARDS[id], save.cards[id].level)
+        ? cardView(this, x, SLOT_Y, SLOT_W, SLOT_H, CARDS[id], save.cards[id].level, save.cards[id].awakening)
         : this.add.container(x, SLOT_Y, [this.add.rectangle(0, 0, SLOT_W, SLOT_H, 0x000000, 0.4)]).setSize(SLOT_W, SLOT_H);
       slot.setInteractive({ useHandCursor: true }).on('pointerup', () => {
         this.selectedSlot = i;
@@ -69,25 +67,22 @@ export class TeamScene extends Phaser.Scene {
       );
     }
 
-    const owned = Object.values(save.cards);
-    const gx = GAME_W / 2 - ((GRID_COLS - 1) * (GRID_W + 18)) / 2;
-    owned.forEach((card, i) => {
-      const x = gx + (i % GRID_COLS) * (GRID_W + 18);
-      const y = GRID_Y + Math.floor(i / GRID_COLS) * (GRID_H + 24) + GRID_H / 2;
-      const view = cardView(this, x, y, GRID_W, GRID_H, CARDS[card.id], card.level);
-      const inTeam = save.team.indexOf(card.id);
-      if (inTeam >= 0) {
+    const grid = collectionGrid(this, {
+      y: GRID_Y,
+      onPick: (id) => this.assign(id),
+      decorate: (view, id) => {
+        const inTeam = save.team.indexOf(id);
+        if (inTeam < 0) return;
         view.setAlpha(0.55);
         view.add(
           this.add
-            .text(0, 0, inTeam === 0 ? 'Лидер' : `Слот ${inTeam + 1}`, { fontFamily: FONT, fontSize: '22px', color: '#ffffff' })
+            .text(0, 0, inTeam === 0 ? 'Лидер' : `Слот ${inTeam + 1}`, { fontFamily: FONT, fontSize: '20px', color: '#ffffff' })
             .setOrigin(0.5)
             .setStroke('#000000', 6),
         );
-      }
-      view.setInteractive({ useHandCursor: true }).on('pointerup', () => this.assign(card.id));
-      this.content.add(view);
+      },
     });
+    this.content.add(grid);
   }
 
   /** Ставит карту в выбранный слот; если она уже в команде — меняет слоты местами. */

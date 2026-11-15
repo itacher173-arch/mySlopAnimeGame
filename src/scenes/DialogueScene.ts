@@ -3,13 +3,16 @@ import { FONT, GAME_H, GAME_W } from '../config';
 import { CARDS } from '../data/cards';
 import { ELEMENT_COLOR } from '../data/elements';
 import { ENEMIES } from '../data/enemies';
-import { EXTRA_SPEAKERS, STAGES, type DialogueLine, type StageDef } from '../data/story';
+import { Save } from '../core/SaveManager';
+import { EXTRA_SPEAKERS, SCRIPTS, STAGES, type DialogueLine } from '../data/story';
 import { coverImage } from '../ui/images';
 import { button, hex, menuBackground } from '../ui/widgets';
 
+/** Реплики этапа (до/после боя) или отдельный сценарий из SCRIPTS (пролог). */
 export interface DialogueData {
-  stageId: string;
-  phase: 'pre' | 'post';
+  stageId?: string;
+  phase?: 'pre' | 'post';
+  script?: string;
 }
 
 const BOX_Y = 900;
@@ -18,8 +21,9 @@ const PORTRAIT = 150;
 const CHAR_MS = 28;
 
 export class DialogueScene extends Phaser.Scene {
-  private stage!: StageDef;
-  private phase: DialogueData['phase'] = 'pre';
+  private title = '';
+  private background = '';
+  private next: { scene: string; data?: object } = { scene: 'MainMenu' };
   private lines: DialogueLine[] = [];
   private index = 0;
 
@@ -36,10 +40,28 @@ export class DialogueScene extends Phaser.Scene {
     super('Dialogue');
   }
 
-  init(data: Partial<DialogueData>): void {
-    this.stage = STAGES[data.stageId ?? '1-1'] ?? STAGES['1-1'];
-    this.phase = data.phase ?? 'pre';
-    this.lines = this.phase === 'pre' ? this.stage.pre : this.stage.post;
+  init(data: DialogueData): void {
+    const script = data.script ? SCRIPTS[data.script] : undefined;
+    let lines: DialogueLine[];
+    if (script) {
+      this.title = script.title;
+      this.background = script.background;
+      this.next = { scene: script.next };
+      lines = script.lines;
+    } else {
+      const stage = STAGES[data.stageId ?? '1-1'] ?? STAGES['1-1'];
+      const pre = (data.phase ?? 'pre') === 'pre';
+      this.title = `${stage.id}  ${stage.title}`;
+      this.background = stage.background;
+      this.next = pre ? { scene: 'Battle', data: { stageId: stage.id } } : { scene: 'StoryMap', data: { chapterId: stage.chapter } };
+      lines = pre ? stage.pre : stage.post;
+    }
+    // «starter» — выбранный игроком герой (в старых сохранениях — лидер команды).
+    const save = Save.get();
+    const starter = save.starter ?? save.team.find((id) => !CARDS[id]?.kind) ?? 'naruto';
+    this.lines = lines
+      .filter((l) => !l.requires || save.cards[l.requires])
+      .map((l) => (l.speaker === 'starter' ? { ...l, speaker: starter } : l));
     this.index = 0;
     this.figure = null;
     this.typing = null;
@@ -47,13 +69,13 @@ export class DialogueScene extends Phaser.Scene {
   }
 
   create(): void {
-    const bgKey = `bg_${this.stage.background}`;
+    const bgKey = `bg_${this.background}`;
     if (this.textures.exists(bgKey)) coverImage(this, bgKey, GAME_W / 2, GAME_H / 2, GAME_W, GAME_H);
     else menuBackground(this);
     this.add.rectangle(0, 0, GAME_W, GAME_H, 0x000000, 0.45).setOrigin(0);
 
     this.add
-      .text(GAME_W / 2, 70, `${this.stage.id}  ${this.stage.title}`, { fontFamily: FONT, fontSize: '34px', color: '#ffe066' })
+      .text(GAME_W / 2, 70, this.title, { fontFamily: FONT, fontSize: '34px', color: '#ffe066' })
       .setOrigin(0.5)
       .setStroke('#000000', 8);
 
@@ -178,8 +200,7 @@ export class DialogueScene extends Phaser.Scene {
     if (this.done) return;
     this.done = true;
     this.typing?.remove();
-    if (this.phase === 'pre') this.scene.start('Battle', { stageId: this.stage.id });
-    else this.scene.start('StoryMap', { chapterId: this.stage.chapter });
+    this.scene.start(this.next.scene, this.next.data);
   }
 }
 

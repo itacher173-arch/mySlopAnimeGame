@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { FONT } from '../config';
+import { Save } from '../core/SaveManager';
 import type { CardDef } from '../data/cards';
 import { ELEMENT_COLOR } from '../data/elements';
 
@@ -47,6 +48,7 @@ export function cardView(
   h: number,
   def: CardDef,
   level?: number,
+  awakening = 0,
 ): Phaser.GameObjects.Container {
   const parts: Phaser.GameObjects.GameObject[] = [];
   const key = `card_${def.id}`;
@@ -78,7 +80,64 @@ export function cardView(
         .setStroke('#000000', 5),
     );
   }
+  parts.push(rarityStars(scene, 0, h / 2 - font * 2.2, def.rarity, awakening, font));
   return scene.add.container(x, y, parts).setSize(w, h);
+}
+
+/** Звёзды редкости; пробуждения — розовым «+N» справа. */
+export function rarityStars(
+  scene: Phaser.Scene,
+  x: number,
+  y: number,
+  rarity: number,
+  awakening: number,
+  size: number,
+): Phaser.GameObjects.Text {
+  return scene.add
+    .text(x, y, '★'.repeat(rarity) + (awakening > 0 ? ` +${awakening}` : ''), {
+      fontFamily: FONT,
+      fontSize: `${Math.round(size * 0.95)}px`,
+      color: '#ffe066',
+    })
+    .setOrigin(0.5)
+    .setStroke('#000000', 4);
+}
+
+/** Закрытый герой коллекции: тёмный силуэт, имя и где его взять. */
+export function lockedCardView(
+  scene: Phaser.Scene,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  def: CardDef,
+  hint: string,
+): Phaser.GameObjects.Container {
+  const view = cardView(scene, x, y, w, h, def);
+  for (const o of view.list) {
+    if (o instanceof Phaser.GameObjects.Image) o.setTint(0x151020);
+  }
+  const font = Math.max(13, Math.round(w / 9));
+  view.add([
+    scene.add.text(0, -h * 0.12, '?', { fontFamily: FONT, fontSize: `${Math.round(w * 0.45)}px`, color: '#6b5f8a' }).setOrigin(0.5),
+    scene.add
+      .text(0, h * 0.14, hint, { fontFamily: FONT, fontSize: `${font}px`, color: '#c9b8ff', align: 'center', wordWrap: { width: w - 10 } })
+      .setOrigin(0.5)
+      .setStroke('#000000', 4),
+  ]);
+  return view;
+}
+
+export function currencyLabel(scene: Phaser.Scene, x: number, y: number): Phaser.GameObjects.Text {
+  const save = Save.get();
+  return scene.add
+    .text(x, y, `Золото: ${save.gold}   💎 ${save.crystals}   🎟 ${save.tickets}`, {
+      fontFamily: FONT,
+      fontSize: '24px',
+      color: '#ffe066',
+    })
+    .setOrigin(1, 0)
+    .setStroke('#000000', 6);
 }
 
 export function title(scene: Phaser.Scene, text: string): void {
