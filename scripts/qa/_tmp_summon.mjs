@@ -1,0 +1,10 @@
+import { freshSave, launch, openPage, sleep } from './lib.mjs';
+const browser = await launch();
+const api = await openPage(browser, { out: 'qa-shots/summon' });
+await import('node:fs').then((fs) => fs.mkdirSync('qa-shots/summon', { recursive: true }));
+await api.goto('?scene=Summon', freshSave({ tickets: 1, pullsSinceNew: 4 }));
+await api.tap(545, 590, 400);
+await sleep(3500);
+await api.shot('reveal_pity');
+console.log(api.issues.length ? api.issues : 'console clean');
+await browser.close();
