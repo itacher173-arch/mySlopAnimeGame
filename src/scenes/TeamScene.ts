@@ -7,9 +7,9 @@ import { button, cardView, menuBackground, title } from '../ui/widgets';
 const SLOT_W = 124;
 const SLOT_H = 165;
 const SLOT_Y = 250;
-const GRID_COLS = 5;
-const GRID_W = 124;
-const GRID_H = 165;
+const GRID_COLS = 4;
+const GRID_W = 150;
+const GRID_H = 200;
 const GRID_Y = 560;
 
 export class TeamScene extends Phaser.Scene {
@@ -70,9 +70,9 @@ export class TeamScene extends Phaser.Scene {
     }
 
     const owned = Object.values(save.cards);
-    const gx = GAME_W / 2 - ((GRID_COLS - 1) * (GRID_W + 12)) / 2;
+    const gx = GAME_W / 2 - ((GRID_COLS - 1) * (GRID_W + 18)) / 2;
     owned.forEach((card, i) => {
-      const x = gx + (i % GRID_COLS) * (GRID_W + 12);
+      const x = gx + (i % GRID_COLS) * (GRID_W + 18);
       const y = GRID_Y + Math.floor(i / GRID_COLS) * (GRID_H + 24) + GRID_H / 2;
       const view = cardView(this, x, y, GRID_W, GRID_H, CARDS[card.id], card.level);
       const inTeam = save.team.indexOf(card.id);

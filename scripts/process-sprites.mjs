@@ -9,6 +9,9 @@ const SRC = 'art/units';
 const OUT = 'public/assets/units';
 const FLOOD_TOL = 120;
 const GLOBAL_TOL = 70;
+const STRONG_KEYNESS = 0.6;
+const EDGE_KEYNESS = 0.2;
+const EDGE_PASSES = 2;
 /** В бою спрайты не выше ~380px, держим запас под чёткость. */
 const MAX_H = 512;
 
@@ -42,12 +45,40 @@ for (const file of fs.readdirSync(SRC).filter((f) => /\.jpe?g$/i.test(f))) {
     if (i < (h - 1) * w) stack.push(i + w);
   }
 
+  // «Ключевость» пикселя: насколько каналы, яркие у фона, превышают тёмные (для зелёного фона это G − max(R,B)).
+  // Нормируем на ключевость самого фона: 1 — чистый фон, ≤0 — цвет, на фон не похожий.
+  const maxKey = Math.max(...key);
+  const high = [0, 1, 2].filter((ch) => key[ch] > maxKey * 0.4);
+  const low = [0, 1, 2].filter((ch) => key[ch] <= maxKey * 0.4);
+  const spill = (i) => Math.min(...high.map((ch) => d[i * 4 + ch])) - Math.max(0, ...low.map((ch) => d[i * 4 + ch]));
+  const keySpill = Math.min(...high.map((ch) => key[ch])) - Math.max(0, ...low.map((ch) => key[ch]));
+  const keyness = (i) => spill(i) / keySpill;
+
+  for (let i = 0; i < w * h; i++) {
+    if (!removed[i] && (dist(i) < GLOBAL_TOL || keyness(i) > STRONG_KEYNESS)) removed[i] = 1;
+  }
+  // Размытые JPEG-края и крапинки между прядями: снимаем по слою заметно «зелёных» пикселей у границы.
+  for (let pass = 0; pass < EDGE_PASSES; pass++) {
+    const next = removed.slice();
+    for (let i = 0; i < w * h; i++) {
+      if (removed[i] || keyness(i) < EDGE_KEYNESS) continue;
+      const x = i % w;
+      if ((x > 0 && removed[i - 1]) || (x < w - 1 && removed[i + 1]) || (i >= w && removed[i - w]) || (i < (h - 1) * w && removed[i + w])) {
+        next[i] = 1;
+      }
+    }
+    removed.set(next);
+  }
+
   let minX = w, minY = h, maxX = -1, maxY = -1;
   for (let i = 0; i < w * h; i++) {
-    if (removed[i] || dist(i) < GLOBAL_TOL) {
+    if (removed[i]) {
       d[i * 4 + 3] = 0;
       continue;
     }
+    // Despill: убираем оттенок фона, вычитая «перебор» из ярких у фона каналов.
+    const s = spill(i);
+    if (s > 0) for (const ch of high) d[i * 4 + ch] -= s;
     const x = i % w;
     const y = (i - x) / w;
     if (x < minX) minX = x;

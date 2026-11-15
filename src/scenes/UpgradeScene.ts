@@ -48,14 +48,14 @@ export class UpgradeScene extends Phaser.Scene {
     const tx = 320;
     const line = (y: number, text: string, color = '#ffffff', size = 26) =>
       this.content.add(this.add.text(tx, y, text, { fontFamily: FONT, fontSize: `${size}px`, color }).setStroke('#000000', 5));
-    line(200, def.name, '#ffffff', 36);
-    line(248, def.anime, '#c9b8ff', 20);
-    line(285, ELEMENT_NAME[def.element], hex(ELEMENT_COLOR[def.element]), 24);
-    line(330, `Уровень: ${owned.level}${maxed ? ' (макс.)' : ` → ${owned.level + 1}`}`);
-    line(372, `Атака: ${stats.atk}${maxed ? '' : `  (+${next.atk - stats.atk})`}`);
-    line(414, `HP: ${stats.hp}${maxed ? '' : `  (+${next.hp - stats.hp})`}`);
+    line(180, def.name, '#ffffff', 36);
+    line(228, def.anime, '#c9b8ff', 20);
+    line(262, ELEMENT_NAME[def.element], hex(ELEMENT_COLOR[def.element]), 24);
+    line(304, `Уровень: ${owned.level}${maxed ? ' (макс.)' : ` → ${owned.level + 1}`}`);
+    line(342, `Атака: ${stats.atk}${maxed ? '' : `  (+${next.atk - stats.atk})`}`);
+    line(380, `HP: ${stats.hp}${maxed ? '' : `  (+${next.hp - stats.hp})`}`);
 
-    const btn = button(this, 500, 490, 340, 84, maxed ? 'Максимум' : `Улучшить: ${cost}`, () => this.upgrade(), 0x2f9e4f);
+    const btn = button(this, 500, 500, 340, 84, maxed ? 'Максимум' : `Улучшить: ${cost}`, () => this.upgrade(), 0x2f9e4f);
     setButtonEnabled(btn, !maxed && save.gold >= cost);
     this.content.add(btn);
 

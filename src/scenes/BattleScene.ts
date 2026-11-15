@@ -40,7 +40,8 @@ const TEAM_SLOTS = [
 const ENEMY_X = 560;
 const ENEMY_Y = 590;
 const ENEMY_H = 380;
-/** Значки стихий поверх всех героев (их глубина — y/100, максимум ~6), но под снарядами. */
+/** Значки стихий — полоса под полем боя, каждый под своим героем: так они не закрывают лица соседей. */
+const BADGE_Y = 624;
 const BADGE_DEPTH = 10;
 
 export class BattleScene extends Phaser.Scene {
@@ -155,10 +156,7 @@ export class BattleScene extends Phaser.Scene {
       this.add.ellipse(x, y, 110, 22, 0x000000, 0.4).setDepth(y / 100 - 0.01);
       const sprite = this.unitSprite(`unit_${def.id}`, x, y, UNIT_H, def.element, def.name, !!def.spriteFacesLeft);
       sprite.setDepth(y / 100);
-      this.add
-        .image(x - 48, y - 4, `stone_${def.element}`)
-        .setScale(0.32)
-        .setDepth(BADGE_DEPTH);
+      this.add.image(x, BADGE_Y, `stone_${def.element}`).setScale(0.3).setDepth(BADGE_DEPTH);
       this.breathe(sprite);
       this.team.push({ def, atk: stats.atk, sprite, x, y });
     });
