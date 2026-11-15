@@ -3,6 +3,7 @@ import { FONT, GAME_H, GAME_W } from '../config';
 import { CARDS } from '../data/cards';
 import { ELEMENTS, ELEMENT_COLOR, type Element } from '../data/elements';
 import { ENEMIES } from '../data/enemies';
+import { backgroundNames } from '../data/story';
 
 export const STONE_SIZE = 88;
 
@@ -28,13 +29,19 @@ export class BootScene extends Phaser.Scene {
       this.load.image(`enemy_${enemy.id}`, `assets/enemies/${enemy.id}.jpg`);
       this.load.image(`unit_${enemy.id}`, `assets/units/${enemy.id}.png`);
     }
+    for (const name of backgroundNames()) this.load.image(`bg_${name}`, `assets/bg/${name}.jpg`);
   }
 
   create(): void {
     for (const e of ELEMENTS) this.makeStoneTexture(e);
     this.makeSparkTexture();
-    // ?scene=Battle и т.п. — сразу открыть нужную сцену при разработке.
-    this.scene.start(new URLSearchParams(location.search).get('scene') ?? 'MainMenu');
+    // Для разработки: ?scene=Battle&stage=1-5, ?scene=Dialogue&stage=1-1&phase=post, ?scene=StoryMap&chapter=2.
+    const params = new URLSearchParams(location.search);
+    const data: Record<string, unknown> = {};
+    if (params.has('stage')) data.stageId = params.get('stage');
+    if (params.has('phase')) data.phase = params.get('phase');
+    if (params.has('chapter')) data.chapterId = Number(params.get('chapter'));
+    this.scene.start(params.get('scene') ?? 'MainMenu', data);
   }
 
   private makeSparkTexture(): void {

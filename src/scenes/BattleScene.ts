@@ -3,9 +3,12 @@ import { BoardModel, type Pos } from '../battle/BoardModel';
 import { BOARD_COLS, BOARD_ROWS, BOARD_X, BOARD_Y, CELL, FONT, GAME_H, GAME_W } from '../config';
 import { REWARD_LOSS, REWARD_WIN, cardStats } from '../core/progression';
 import { Save } from '../core/SaveManager';
+import { applyStageWin, starRules, type StageResult } from '../core/story';
 import { CARDS, type CardDef } from '../data/cards';
 import { ELEMENT_COLOR, ELEMENT_NAME, elementMultiplier, type Element } from '../data/elements';
 import { ENEMIES, type EnemyDef } from '../data/enemies';
+import { STAGES, STAR_HP_RATIO, type StageDef } from '../data/story';
+import { coverImage } from '../ui/images';
 import { button } from '../ui/widgets';
 import { STONE_SIZE } from './BootScene';
 
@@ -18,6 +21,28 @@ interface Unit {
   sprite: Sprite;
   x: number;
   y: number;
+}
+
+/** Враг на поле. Слот — индекс в раскладке волны, по нему же призыв ищет свободное место. */
+interface Foe {
+  def: EnemyDef;
+  hp: number;
+  cd: number;
+  /** Сколько ходов игрока прожил — для призыва раз в N ходов. */
+  turns: number;
+  slot: number;
+  x: number;
+  y: number;
+  h: number;
+  w: number;
+  /** Тень и спрайт; глубина по y, как у героев. */
+  root: Phaser.GameObjects.Container;
+  /** Полоска HP, ходы до атаки, щит — поверх всех спрайтов. */
+  ui: Phaser.GameObjects.Container;
+  sprite: Sprite;
+  hpBar: Phaser.GameObjects.Rectangle;
+  cdText: Phaser.GameObjects.Text;
+  guardText: Phaser.GameObjects.Text | null;
 }
 
 const MIN_CHAIN = 3;
@@ -37,9 +62,23 @@ const TEAM_SLOTS = [
   { x: 150, y: 600 },
   { x: 285, y: 600 },
 ];
-const ENEMY_X = 560;
-const ENEMY_Y = 590;
-const ENEMY_H = 380;
+const ENEMY_H = 200;
+/** Раскладки слотов врагов (ступни) по числу врагов в волне; первый слот — главный (для босса). */
+const ENEMY_SLOTS: { x: number; y: number }[][] = [
+  [{ x: 560, y: 590 }],
+  [
+    { x: 610, y: 600 },
+    { x: 460, y: 500 },
+  ],
+  [
+    { x: 600, y: 570 },
+    { x: 450, y: 470 },
+    { x: 470, y: 625 },
+  ],
+];
+const FOE_BAR_W = 120;
+const FOE_UI_DEPTH = 12;
+const QUICK_WAVES = [['sukuna']];
 /** Значки стихий — полоса под полем боя, каждый под своим героем: так они не закрывают лица соседей. */
 const BADGE_Y = 624;
 const BADGE_DEPTH = 10;
@@ -61,28 +100,55 @@ export class BattleScene extends Phaser.Scene {
   private teamHpBar!: Phaser.GameObjects.Rectangle;
   private teamHpText!: Phaser.GameObjects.Text;
 
-  private enemy!: EnemyDef;
-  private enemyHp = 0;
-  private enemyCd = 0;
-  private enemySprite!: Sprite;
+  /** Этап сюжета; null — быстрый бой против Сукуны. */
+  private stage: StageDef | null = null;
+  private waves: string[][] = QUICK_WAVES;
+  private waveIndex = 0;
+  private slots: { x: number; y: number }[] = [];
+  private foes: Foe[] = [];
+  private target: Foe | null = null;
+  private targetMarker: Phaser.GameObjects.GameObject[] = [];
+  private moves = 0;
+  /** Итог боя для оверлея и автотестов (scripts/playtest.mjs). */
+  outcome: 'win' | 'lose' | null = null;
+  private paused = false;
+  private pauseLayer: Phaser.GameObjects.GameObject[] = [];
+
+  private headerName!: Phaser.GameObjects.Text;
+  private headerElement!: Phaser.GameObjects.Text;
   private enemyHpBar!: Phaser.GameObjects.Rectangle;
   private enemyHpText!: Phaser.GameObjects.Text;
-  private enemyCdText!: Phaser.GameObjects.Text;
+  private waveText!: Phaser.GameObjects.Text;
+  private movesText!: Phaser.GameObjects.Text;
 
   constructor() {
     super('Battle');
   }
 
+  init(data: { stageId?: string }): void {
+    this.stage = (data.stageId && STAGES[data.stageId]) || null;
+    this.waves = this.stage ? this.stage.waves : QUICK_WAVES;
+  }
+
   create(): void {
     // Сцена переиспользуется при restart(), поэтому всё состояние сбрасываем здесь.
     this.busy = false;
+    this.paused = false;
+    this.pauseLayer = [];
     this.chain = [];
     this.chainElement = null;
     this.stones = [];
     this.team = [];
+    this.foes = [];
+    this.target = null;
+    this.targetMarker = [];
+    this.waveIndex = 0;
+    this.moves = 0;
+    this.outcome = null;
 
     this.drawBackground();
-    this.createEnemy(ENEMIES.sukuna);
+    this.createHeader();
+    this.spawnWave(false);
     this.createTeam();
     this.createBoard();
     this.setupInput();
@@ -110,39 +176,230 @@ export class BattleScene extends Phaser.Scene {
         g.fillRect(BOARD_X + c * CELL, BOARD_Y + r * CELL, CELL, CELL);
       }
     }
+
+    const bgKey = this.stage ? `bg_${this.stage.background}` : '';
+    if (this.textures.exists(bgKey)) {
+      coverImage(this, bgKey, GAME_W / 2, FIELD_H / 2, GAME_W, FIELD_H, 0.6);
+      // Затемнение сверху, чтобы читались имя врага и полоска HP.
+      const shade = this.add.graphics();
+      shade.fillGradientStyle(0x000000, 0x000000, 0x000000, 0x000000, 0.65, 0.65, 0, 0);
+      shade.fillRect(0, 0, GAME_W, 170);
+    }
   }
 
-  private createEnemy(def: EnemyDef): void {
-    this.enemy = def;
-    this.enemyHp = def.hp;
-    this.enemyCd = def.cooldown;
-
-    this.add.ellipse(ENEMY_X, ENEMY_Y, 220, 36, 0x000000, 0.4);
-    this.enemySprite = this.unitSprite(`unit_${def.id}`, ENEMY_X, ENEMY_Y, ENEMY_H, def.element, def.name, false);
-    this.breathe(this.enemySprite);
-
-    this.add.text(24, 16, def.name, { fontFamily: FONT, fontSize: '28px', color: '#ffffff' }).setStroke('#000000', 6);
-    this.add
-      .text(GAME_W - 24, 18, ELEMENT_NAME[def.element], {
-        fontFamily: FONT,
-        fontSize: '22px',
-        color: hex(ELEMENT_COLOR[def.element]),
-      })
+  private createHeader(): void {
+    const style = { fontFamily: FONT, fontSize: '28px', color: '#ffffff' };
+    this.headerName = this.add.text(24, 16, '', style).setStroke('#000000', 6);
+    this.headerElement = this.add
+      .text(GAME_W - 24, 18, '', { ...style, fontSize: '22px' })
       .setOrigin(1, 0)
       .setStroke('#000000', 6);
     const { bar, text } = this.hpBar(24, 56, GAME_W - 48, 22, 0xd8323c);
     this.enemyHpBar = bar;
     this.enemyHpText = text;
-    this.updateEnemyHp(false);
 
-    this.add.circle(GAME_W - 70, 140, 40, 0x000000, 0.6).setStrokeStyle(4, 0xff5a5a);
-    this.enemyCdText = this.add
-      .text(GAME_W - 70, 134, '', { fontFamily: FONT, fontSize: '36px', color: '#ffffff' })
-      .setOrigin(0.5);
-    this.add
-      .text(GAME_W - 70, 164, 'ход', { fontFamily: FONT, fontSize: '15px', color: '#ffb0b0' })
-      .setOrigin(0.5);
-    this.updateEnemyCd();
+    this.waveText = this.add
+      .text(GAME_W / 2, 92, '', { ...style, fontSize: '24px', color: '#ffe066' })
+      .setOrigin(0.5, 0)
+      .setStroke('#000000', 6);
+    this.movesText = this.add
+      .text(GAME_W - 24, 94, '', { ...style, fontSize: '20px' })
+      .setOrigin(1, 0)
+      .setStroke('#000000', 5);
+    this.createPauseButton();
+  }
+
+  private createPauseButton(): void {
+    const btn = this.add.container(52, 130).setDepth(FOE_UI_DEPTH);
+    btn.add([
+      this.add.circle(0, 0, 28, 0x000000, 0.6).setStrokeStyle(3, 0xffffff, 0.9),
+      this.add.rectangle(-8, 0, 8, 26, 0xffffff),
+      this.add.rectangle(8, 0, 8, 26, 0xffffff),
+    ]);
+    btn.setSize(64, 64).setInteractive({ useHandCursor: true });
+    btn.on('pointerup', () => this.openPause());
+  }
+
+  private openPause(): void {
+    if (this.paused || this.pauseLayer.length) return;
+    this.paused = true;
+    const close = () => {
+      this.pauseLayer.forEach((o) => o.destroy());
+      this.pauseLayer = [];
+      this.paused = false;
+    };
+    const leave = () => (this.stage ? this.scene.start('StoryMap', { chapterId: this.stage.chapter }) : this.scene.start('MainMenu'));
+    this.pauseLayer = [
+      this.add.rectangle(GAME_W / 2, GAME_H / 2, GAME_W, GAME_H, 0x000000, 0.75).setDepth(200).setInteractive(),
+      this.add
+        .text(GAME_W / 2, GAME_H / 2 - 160, 'Пауза', { fontFamily: FONT, fontSize: '72px', color: '#ffffff' })
+        .setOrigin(0.5)
+        .setStroke('#000000', 10)
+        .setDepth(201),
+      button(this, GAME_W / 2, GAME_H / 2, 340, 96, 'Продолжить', close).setDepth(201),
+      button(this, GAME_W / 2, GAME_H / 2 + 120, 340, 96, 'Сдаться', leave, 0xd8323c).setDepth(201),
+    ];
+  }
+
+  // ---------- враги и волны ----------
+
+  private spawnWave(animate: boolean): void {
+    const defs = this.waves[this.waveIndex].map((id) => ENEMIES[id]).filter(Boolean);
+    // Призывателю нужны свободные слоты под свиту.
+    const maxSummon = Math.max(0, ...defs.flatMap((d) => d.traits ?? []).map((t) => (t.kind === 'summon' ? t.max : 0)));
+    const n = Phaser.Math.Clamp(Math.max(defs.length, maxSummon), 1, ENEMY_SLOTS.length);
+    this.slots = ENEMY_SLOTS[n - 1];
+    // Босс и элита занимают главный слот, остальные — по порядку волны.
+    const order = [...defs].sort((a, b) => rankWeight(b) - rankWeight(a));
+    order.slice(0, this.slots.length).forEach((def, i) => this.addFoe(def, i, animate));
+    this.target = null;
+    this.selectTarget(this.foes[0] ?? null);
+    this.updateGuards();
+    this.updateInfo();
+  }
+
+  private addFoe(def: EnemyDef, slot: number, animate: boolean): Foe {
+    const { x, y } = this.slots[slot];
+    const h = def.height ?? ENEMY_H;
+    const root = this.add.container(x, y).setDepth(y / 100);
+    const sprite = this.unitSprite(`unit_${def.id}`, 0, 0, h, def.element, def.name, !!def.spriteFacesRight);
+    const w = sprite instanceof Phaser.GameObjects.Image ? sprite.displayWidth : h * 0.55;
+    root.add([this.add.ellipse(0, 0, Math.max(90, w * 0.8), Math.max(18, h * 0.09), 0x000000, 0.4), sprite]);
+    this.breathe(sprite);
+
+    // Маленькая полоска HP над головой: значок стихии, полоска, кружок с ходами до атаки.
+    const barY = -h - 18;
+    const ui = this.add.container(x, y).setDepth(FOE_UI_DEPTH);
+    const hpBar = this.add.rectangle(-FOE_BAR_W / 2 + 2, barY, FOE_BAR_W - 4, 10, 0xd8323c).setOrigin(0, 0.5);
+    const cdText = this.add
+      .text(FOE_BAR_W / 2 + 22, barY, String(def.cooldown), { fontFamily: FONT, fontSize: '20px', color: '#ffffff' })
+      .setOrigin(0.5)
+      .setStroke('#000000', 4);
+    ui.add([
+      this.add.rectangle(0, barY, FOE_BAR_W, 14, 0x000000, 0.75).setStrokeStyle(2, 0xffffff, 0.7),
+      hpBar,
+      this.add.image(-FOE_BAR_W / 2 - 16, barY, `stone_${def.element}`).setScale(0.3),
+      this.add.circle(FOE_BAR_W / 2 + 22, barY, 17, 0x000000, 0.75).setStrokeStyle(3, 0xff5a5a),
+      cdText,
+    ]);
+    let guardText: Phaser.GameObjects.Text | null = null;
+    if (def.traits?.some((t) => t.kind === 'guarded')) {
+      guardText = this.add
+        .text(0, barY - 24, 'ЩИТ свиты', { fontFamily: FONT, fontSize: '18px', color: '#8fd3ff' })
+        .setOrigin(0.5)
+        .setStroke('#000000', 5);
+      ui.add(guardText);
+    }
+
+    const foe: Foe = { def, hp: def.hp, cd: def.cooldown, turns: 0, slot, x, y, h, w, root, ui, sprite, hpBar, cdText, guardText };
+    this.foes.push(foe);
+    this.updateFoeCd(foe);
+
+    if (animate) {
+      for (const c of [root, ui]) {
+        c.x = x + 320;
+        c.setAlpha(0);
+        this.tweens.add({ targets: c, x, alpha: 1, duration: 450, ease: 'Back.easeOut' });
+      }
+    }
+    return foe;
+  }
+
+  private async killFoe(foe: Foe): Promise<void> {
+    this.foes = this.foes.filter((f) => f !== foe);
+    if (this.target === foe) this.selectTarget(this.foes[0] ?? null);
+    this.updateGuards();
+    const { root, ui } = foe;
+    ui.destroy();
+    this.burst(foe.x, foe.y - foe.h / 2, ELEMENT_COLOR[foe.def.element]);
+    await this.tween({ targets: root, alpha: 0, y: foe.y + 30, duration: 380 });
+    root.destroy();
+  }
+
+  private selectTarget(foe: Foe | null): void {
+    this.targetMarker.forEach((o) => o.destroy());
+    this.targetMarker = [];
+    this.target = foe;
+    if (foe) {
+      const { root, ui } = foe;
+      const ring = this.add.ellipse(0, 0, Math.max(110, foe.w * 0.95), Math.max(26, foe.h * 0.13)).setStrokeStyle(4, 0xffe066);
+      root.addAt(ring, 0);
+      const arrow = this.add.triangle(0, -foe.h - 52 - (foe.guardText ? 22 : 0), 0, 0, 24, 0, 12, 16, 0xffe066).setStrokeStyle(2, 0x000000);
+      ui.add(arrow);
+      this.tweens.add({ targets: arrow, y: arrow.y - 8, duration: 400, yoyo: true, repeat: -1 });
+      this.tweens.add({ targets: ring, alpha: 0.4, duration: 500, yoyo: true, repeat: -1 });
+      this.targetMarker = [ring, arrow];
+    }
+    this.updateHeader(false);
+  }
+
+  /** Текущая цель; если выбранная погибла — первая живая. */
+  private currentTarget(): Foe | null {
+    if (!this.target || !this.foes.includes(this.target)) this.selectTarget(this.foes[0] ?? null);
+    return this.target;
+  }
+
+  private foeAt(px: number, py: number): Foe | null {
+    let best: Foe | null = null;
+    for (const f of this.foes) {
+      const inside = Math.abs(px - f.x) <= Math.max(f.w, 100) / 2 && py <= f.y + 20 && py >= f.y - f.h - 40;
+      // При наложении выбираем того, кто стоит ближе (ниже на экране).
+      if (inside && (!best || f.y > best.y)) best = f;
+    }
+    return best;
+  }
+
+  private guardMult(foe: Foe): number {
+    const guard = foe.def.traits?.find((t) => t.kind === 'guarded');
+    return guard && this.foes.some((f) => f !== foe) ? guard.mult : 1;
+  }
+
+  private updateGuards(): void {
+    for (const f of this.foes) f.guardText?.setVisible(this.guardMult(f) < 1);
+  }
+
+  private updateHeader(animate: boolean): void {
+    const t = this.target;
+    if (!t) return;
+    this.headerName.setText(t.def.rank === 'boss' ? `☠ ${t.def.name}` : t.def.name);
+    this.headerElement.setText(ELEMENT_NAME[t.def.element]).setColor(hex(ELEMENT_COLOR[t.def.element]));
+    this.setBar(this.enemyHpBar, t.hp / t.def.hp, animate);
+    this.enemyHpText.setText(`${t.hp} / ${t.def.hp}`);
+  }
+
+  private updateFoeHp(foe: Foe): void {
+    this.setBar(foe.hpBar, foe.hp / foe.def.hp, true);
+    if (foe === this.target) this.updateHeader(true);
+  }
+
+  private updateFoeCd(foe: Foe): void {
+    foe.cdText.setText(String(foe.cd)).setColor(foe.cd === 1 ? '#ff5a5a' : '#ffffff');
+  }
+
+  private updateInfo(): void {
+    this.waveText.setText(this.waves.length > 1 ? `Волна ${this.waveIndex + 1}/${this.waves.length}` : '');
+    this.movesText.setText(this.stage ? `Ходы: ${this.moves}/${this.stage.parMoves}` : `Ходы: ${this.moves}`);
+    if (this.stage) this.movesText.setColor(this.moves > this.stage.parMoves ? '#ff8a8a' : '#ffffff');
+  }
+
+  private async nextWave(): Promise<void> {
+    this.waveIndex++;
+    const banner = this.add
+      .text(GAME_W / 2, FIELD_H / 2 - 40, `Волна ${this.waveIndex + 1}/${this.waves.length}`, {
+        fontFamily: FONT,
+        fontSize: '72px',
+        color: '#ffe066',
+      })
+      .setOrigin(0.5)
+      .setStroke('#000000', 10)
+      .setDepth(60)
+      .setScale(0.4)
+      .setAlpha(0);
+    await this.tween({ targets: banner, scale: 1, alpha: 1, duration: 300, ease: 'Back.easeOut' });
+    this.spawnWave(true);
+    await this.wait(500);
+    await this.tween({ targets: banner, alpha: 0, y: banner.y - 40, duration: 250 });
+    banner.destroy();
   }
 
   private createTeam(): void {
@@ -207,6 +464,12 @@ export class BattleScene extends Phaser.Scene {
 
   private setupInput(): void {
     this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
+      if (this.paused) return;
+      if (p.y < FIELD_H) {
+        const foe = this.foeAt(p.x, p.y);
+        if (foe && foe !== this.target) this.selectTarget(foe);
+        return;
+      }
       if (this.busy) return;
       const pos = cellAt(p.x, p.y, 0.75);
       if (!pos) return;
@@ -216,7 +479,7 @@ export class BattleScene extends Phaser.Scene {
     });
 
     this.input.on('pointermove', (p: Phaser.Input.Pointer) => {
-      if (this.busy || !this.chainElement || !p.isDown) return;
+      if (this.busy || this.paused || !this.chainElement || !p.isDown) return;
       const pos = cellAt(p.x, p.y, PICK_RADIUS);
       if (!pos) return;
       const last = this.chain[this.chain.length - 1];
@@ -294,6 +557,8 @@ export class BattleScene extends Phaser.Scene {
 
   private async resolveChain(chain: Pos[], element: Element): Promise<void> {
     this.busy = true;
+    this.moves++;
+    this.updateInfo();
     const attackers = this.team.filter((u) => u.def.element === element);
     const target = attackers[0] ?? this.team[0];
 
@@ -318,16 +583,19 @@ export class BattleScene extends Phaser.Scene {
     const refill = this.dropStones();
 
     await Promise.all(absorbs);
-    for (const unit of attackers) await this.heroAttack(unit, chain.length);
+    for (const unit of attackers) {
+      if (this.foes.length === 0) break;
+      await this.heroAttack(unit, chain.length);
+    }
     await refill;
 
-    if (this.enemyHp <= 0) {
-      await this.tween({ targets: this.enemySprite, alpha: 0, y: ENEMY_Y + 30, duration: 500 });
-      return this.finish(true);
+    if (this.foes.length === 0) {
+      if (this.waveIndex >= this.waves.length - 1) return this.finish(true);
+      await this.nextWave();
+    } else {
+      await this.enemyTurn();
+      if (this.teamHp <= 0) return this.finish(false);
     }
-
-    await this.enemyTurn();
-    if (this.teamHp <= 0) return this.finish(false);
 
     if (!this.model.hasChain()) await this.reshuffle();
     this.busy = false;
@@ -354,15 +622,18 @@ export class BattleScene extends Phaser.Scene {
   }
 
   private async heroAttack(unit: Unit, chainLength: number): Promise<void> {
-    const mult = elementMultiplier(unit.def.element, this.enemy.element);
+    const foe = this.currentTarget();
+    if (!foe) return;
+    const mult = elementMultiplier(unit.def.element, foe.def.element);
+    const guard = this.guardMult(foe);
     const lengthBonus = 1 + CHAIN_LENGTH_BONUS * (chainLength - MIN_CHAIN);
-    const dmg = Math.round(unit.atk * chainLength * 0.5 * lengthBonus * mult);
+    const dmg = Math.round(unit.atk * chainLength * 0.5 * lengthBonus * mult * guard);
     const color = ELEMENT_COLOR[unit.def.element];
 
     await this.tween({ targets: unit.sprite, x: unit.x + 50, duration: 120, ease: 'Quad.easeOut' });
 
     const from = { x: unit.x + 40, y: unit.y - UNIT_H * 0.55 };
-    const to = { x: ENEMY_X, y: ENEMY_Y - ENEMY_H * 0.5 };
+    const to = { x: foe.x, y: foe.y - foe.h * 0.5 };
     const orb = this.add.image(from.x, from.y, `stone_${unit.def.element}`).setScale(0.45).setDepth(40);
     const trail = this.add
       .particles(0, 0, 'spark', {
@@ -384,33 +655,58 @@ export class BattleScene extends Phaser.Scene {
     this.time.delayedCall(400, () => trail.destroy());
 
     this.burst(to.x, to.y, color);
-    this.enemyHp = Math.max(0, this.enemyHp - dmg);
-    this.flash(this.enemySprite, 0xffffff);
-    this.tweens.add({ targets: this.enemySprite, x: ENEMY_X + 14, duration: 50, yoyo: true, repeat: 1 });
-    this.floatText(to.x + Phaser.Math.Between(-50, 50), to.y - 40, mult > 1 ? `${dmg}!` : `${dmg}`, color, mult > 1 ? 58 : 46);
-    this.updateEnemyHp(true);
-    await this.wait(250);
+    foe.hp = Math.max(0, foe.hp - dmg);
+    this.flash(foe.sprite, 0xffffff);
+    this.tweens.add({ targets: foe.root, x: foe.x + 14, duration: 50, yoyo: true, repeat: 1 });
+    const label = guard < 1 ? `${dmg} щит` : mult > 1 ? `${dmg}!` : `${dmg}`;
+    this.floatText(to.x + Phaser.Math.Between(-40, 40), to.y - 40, label, guard < 1 ? 0x8fd3ff : color, mult > 1 ? 54 : 42);
+    this.updateFoeHp(foe);
+    if (foe.hp <= 0) await this.killFoe(foe);
+    else await this.wait(250);
   }
 
   private async enemyTurn(): Promise<void> {
-    this.enemyCd--;
-    this.updateEnemyCd();
-    if (this.enemyCd > 0) {
-      await this.wait(150);
-      return;
+    // Копия списка: призванные в этом ходу враги действуют со следующего.
+    for (const foe of [...this.foes]) {
+      if (!this.foes.includes(foe)) continue;
+      foe.turns++;
+      await this.trySummon(foe);
+      foe.cd--;
+      this.updateFoeCd(foe);
+      if (foe.cd > 0) continue;
+      await this.foeAttack(foe);
+      if (this.teamHp <= 0) return;
     }
+    await this.wait(150);
+  }
 
-    await this.tween({ targets: this.enemySprite, x: ENEMY_X - 140, duration: 160, ease: 'Quad.easeIn' });
-    this.cameras.main.shake(250, 0.012);
+  private async trySummon(foe: Foe): Promise<void> {
+    for (const t of foe.def.traits ?? []) {
+      if (t.kind !== 'summon' || foe.turns % t.every !== 0 || this.foes.length >= t.max) continue;
+      const def = ENEMIES[t.enemyId];
+      const slot = this.slots.findIndex((_, i) => !this.foes.some((f) => f.slot === i));
+      if (!def || slot < 0) continue;
+      this.floatText(foe.x, foe.y - foe.h - 70, 'Призыв!', 0xffe066, 36);
+      await this.tween({ targets: foe.root, scaleY: 1.08, duration: 150, yoyo: true });
+      this.addFoe(def, slot, true);
+      this.updateGuards();
+      await this.wait(450);
+    }
+  }
+
+  private async foeAttack(foe: Foe): Promise<void> {
+    const boss = foe.def.rank === 'boss';
+    await this.tween({ targets: foe.root, x: foe.x - (boss ? 140 : 90), duration: 160, ease: 'Quad.easeIn' });
+    this.cameras.main.shake(250, boss ? 0.012 : 0.006);
     this.cameras.main.flash(150, 120, 0, 0);
     for (const u of this.team) this.flash(u.sprite, 0xff3030);
-    this.teamHp = Math.max(0, this.teamHp - this.enemy.atk);
-    this.floatText(220, 420, `-${this.enemy.atk}`, 0xff4040, 52);
+    this.teamHp = Math.max(0, this.teamHp - foe.def.atk);
+    this.floatText(220, 420, `-${foe.def.atk}`, 0xff4040, 52);
     this.updateTeamHp(true);
-    await this.tween({ targets: this.enemySprite, x: ENEMY_X, duration: 260, ease: 'Quad.easeOut' });
-    this.enemyCd = this.enemy.cooldown;
-    this.updateEnemyCd();
-    await this.wait(250);
+    await this.tween({ targets: foe.root, x: foe.x, duration: 260, ease: 'Quad.easeOut' });
+    foe.cd = foe.def.cooldown;
+    this.updateFoeCd(foe);
+    await this.wait(200);
   }
 
   private async reshuffle(): Promise<void> {
@@ -428,30 +724,75 @@ export class BattleScene extends Phaser.Scene {
   }
 
   private finish(win: boolean): void {
-    const reward = win ? REWARD_WIN : REWARD_LOSS;
-    Save.get().gold += reward;
-    Save.write();
+    this.busy = true;
+    this.outcome = win ? 'win' : 'lose';
+    let result: StageResult | null = null;
+    let reward = 0;
+    if (this.stage) {
+      if (win) {
+        result = applyStageWin(this.stage.id, { moves: this.moves, teamHp: this.teamHp, teamMaxHp: this.teamMaxHp });
+        reward = result.gold;
+      }
+    } else {
+      reward = win ? REWARD_WIN : REWARD_LOSS;
+      Save.get().gold += reward;
+      Save.write();
+    }
+    this.time.delayedCall(400, () => this.showResult(win, reward, result));
+  }
 
-    this.time.delayedCall(400, () => {
-      this.add.rectangle(GAME_W / 2, GAME_H / 2, GAME_W, GAME_H, 0x000000, 0.75).setDepth(100).setInteractive();
+  private showResult(win: boolean, reward: number, result: StageResult | null): void {
+    const cx = GAME_W / 2;
+    const cy = GAME_H / 2;
+    const text = (y: number, s: string, size: number, color: string) =>
       this.add
-        .text(GAME_W / 2, GAME_H / 2 - 120, win ? 'ПОБЕДА!' : 'ПОРАЖЕНИЕ', {
-          fontFamily: FONT,
-          fontSize: '80px',
-          color: win ? '#ffe066' : '#ff5a5a',
-        })
+        .text(cx, y, s, { fontFamily: FONT, fontSize: `${size}px`, color, align: 'center' })
         .setOrigin(0.5)
-        .setStroke('#000000', 10)
-        .setDepth(101);
-      this.add
-        .text(GAME_W / 2, GAME_H / 2 - 30, `+${reward} золота`, { fontFamily: FONT, fontSize: '36px', color: '#ffe066' })
-        .setOrigin(0.5)
-        .setStroke('#000000', 7)
+        .setStroke('#000000', Math.round(size / 7))
         .setDepth(101);
 
-      button(this, GAME_W / 2, GAME_H / 2 + 90, 320, 96, 'Ещё раз', () => this.scene.restart()).setDepth(101);
-      button(this, GAME_W / 2, GAME_H / 2 + 210, 320, 96, 'В меню', () => this.scene.start('MainMenu')).setDepth(101);
-    });
+    this.add.rectangle(cx, cy, GAME_W, GAME_H, 0x000000, 0.75).setDepth(100).setInteractive();
+    text(cy - 300, win ? 'ПОБЕДА!' : 'ПОРАЖЕНИЕ', 80, win ? '#ffe066' : '#ff5a5a');
+
+    const stage = this.stage;
+    if (stage && result) {
+      const stars = [true, this.teamHp > this.teamMaxHp * STAR_HP_RATIO, this.moves <= stage.parMoves];
+      stars.forEach((lit, i) => {
+        const star = this.add
+          .text(cx + (i - 1) * 120, cy - 180, '★', { fontFamily: FONT, fontSize: '110px', color: lit ? '#ffe066' : '#3a3550' })
+          .setOrigin(0.5)
+          .setStroke('#000000', 8)
+          .setDepth(101)
+          .setScale(0);
+        this.tweens.add({ targets: star, scale: 1, delay: 200 + i * 220, duration: 300, ease: 'Back.easeOut' });
+      });
+      starRules(stage).forEach((rule, i) => {
+        const detail = i === 1 ? ` (${Math.round((this.teamHp / this.teamMaxHp) * 100)}%)` : i === 2 ? ` (${this.moves})` : '';
+        text(cy - 80 + i * 36, `${stars[i] ? '✔' : '✘'} ${rule}${detail}`, 24, stars[i] ? '#b8ffb8' : '#ff9a9a');
+      });
+      text(cy + 40, `+${reward} золота${result.firstClear ? ' (первое прохождение)' : ''}`, 30, '#ffe066');
+      if (result.chapterReward) {
+        text(cy + 90, `Получен Камень Духа: ${ELEMENT_NAME[result.chapterReward.spiritStone]}!`, 30, hex(ELEMENT_COLOR[result.chapterReward.spiritStone]));
+      }
+    } else if (reward > 0) {
+      text(cy - 30, `+${reward} золота`, 36, '#ffe066');
+    }
+
+    const by = cy + 210;
+    if (stage) {
+      const toMap = () => this.scene.start('StoryMap', { chapterId: stage.chapter });
+      const retry = () => this.scene.restart({ stageId: stage.id });
+      if (win) {
+        button(this, cx, by, 320, 96, 'Далее', () => this.scene.start('Dialogue', { stageId: stage.id, phase: 'post' }), 0xd8323c).setDepth(101);
+        button(this, cx, by + 120, 320, 90, 'Повтор', retry).setDepth(101);
+      } else {
+        button(this, cx, by, 320, 96, 'Повтор', retry, 0xd8323c).setDepth(101);
+        button(this, cx, by + 120, 320, 90, 'На карту', toMap).setDepth(101);
+      }
+    } else {
+      button(this, cx, by, 320, 96, 'Ещё раз', () => this.scene.restart({})).setDepth(101);
+      button(this, cx, by + 120, 320, 96, 'В меню', () => this.scene.start('MainMenu')).setDepth(101);
+    }
   }
 
   // ---------- помощники ----------
@@ -516,11 +857,6 @@ export class BattleScene extends Phaser.Scene {
     return { bar, text };
   }
 
-  private updateEnemyHp(animate: boolean): void {
-    this.setBar(this.enemyHpBar, this.enemyHp / this.enemy.hp, animate);
-    this.enemyHpText.setText(`${this.enemyHp} / ${this.enemy.hp}`);
-  }
-
   private updateTeamHp(animate: boolean): void {
     this.setBar(this.teamHpBar, this.teamHp / this.teamMaxHp, animate);
     this.teamHpText.setText(`HP ${this.teamHp} / ${this.teamMaxHp}`);
@@ -529,11 +865,6 @@ export class BattleScene extends Phaser.Scene {
   private setBar(bar: Phaser.GameObjects.Rectangle, ratio: number, animate: boolean): void {
     if (animate) this.tweens.add({ targets: bar, scaleX: ratio, duration: 250, ease: 'Quad.easeOut' });
     else bar.scaleX = ratio;
-  }
-
-  private updateEnemyCd(): void {
-    this.enemyCdText.setText(String(this.enemyCd));
-    this.enemyCdText.setColor(this.enemyCd === 1 ? '#ff5a5a' : '#ffffff');
   }
 
   private floatText(x: number, y: number, text: string, color: number, size: number): void {
@@ -572,6 +903,10 @@ function cellAt(x: number, y: number, radius: number): Pos | null {
   if (p.r < 0 || p.r >= BOARD_ROWS || p.c < 0 || p.c >= BOARD_COLS) return null;
   if (Math.hypot(x - cellX(p.c), y - cellY(p.r)) > radius * CELL) return null;
   return p;
+}
+
+function rankWeight(def: EnemyDef): number {
+  return def.rank === 'boss' ? 2 : def.rank === 'elite' ? 1 : 0;
 }
 
 function hex(color: number): string {

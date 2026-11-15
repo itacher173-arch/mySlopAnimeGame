@@ -39,8 +39,10 @@ export class MainMenuScene extends Phaser.Scene {
     const startX = GAME_W / 2 - ((rest.length - 1) * (w + gap)) / 2;
     rest.forEach((id, i) => cardView(this, startX + i * (w + gap), 830, w, 174, CARDS[id], save.cards[id].level));
 
-    button(this, GAME_W / 2, 1005, 420, 110, 'В бой', () => this.scene.start('Battle'), 0xd8323c);
-    button(this, GAME_W / 2 - 165, 1145, 300, 90, 'Команда', () => this.scene.start('Team'));
-    button(this, GAME_W / 2 + 165, 1145, 300, 90, 'Прокачка', () => this.scene.start('Upgrade'));
+    button(this, GAME_W / 2, 1000, 440, 110, 'Сюжет', () => this.scene.start('StoryMap'), 0xd8323c);
+    const quick = button(this, GAME_W / 2 - 232, 1140, 216, 90, 'Быстрый бой', () => this.scene.start('Battle', {}), 0x8a2b52);
+    (quick.list[1] as Phaser.GameObjects.Text).setFontSize(25);
+    button(this, GAME_W / 2, 1140, 216, 90, 'Команда', () => this.scene.start('Team'));
+    button(this, GAME_W / 2 + 232, 1140, 216, 90, 'Прокачка', () => this.scene.start('Upgrade'));
   }
 }
