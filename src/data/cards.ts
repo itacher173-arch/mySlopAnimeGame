@@ -19,6 +19,8 @@ export interface CardDef {
   maxLevel?: number;
   /** Доля высоты героя в бою (духи — маленькие). */
   battleScale?: number;
+  /** Летающий юнит: на сколько px спрайт висит над своей тенью. */
+  hover?: number;
   /** Боевой спрайт нарисован смотрящим влево — в бою героя нужно отразить. */
   spriteFacesLeft?: boolean;
 }
@@ -38,11 +40,12 @@ const HEROES: CardDef[] = [
 
 const SPIRIT_BASE = { anime: 'Духи Аквы', rarity: 1, kind: 'spirit', maxLevel: 10, battleScale: 0.75 } as const;
 const SPIRIT_DEFS: CardDef[] = [
-  { ...SPIRIT_BASE, id: 'spirit_fire', name: 'Саламандра', element: 'fire', atk: 72, hp: 330 },
-  { ...SPIRIT_BASE, id: 'spirit_water', name: 'Ундина', element: 'water', atk: 66, hp: 360 },
+  // Саламандра и Тень — широкие четвероногие: ниже ростом, иначе выглядят крупнее героев.
+  { ...SPIRIT_BASE, id: 'spirit_fire', name: 'Саламандра', element: 'fire', atk: 72, hp: 330, battleScale: 0.62 },
+  { ...SPIRIT_BASE, id: 'spirit_water', name: 'Ундина', element: 'water', atk: 66, hp: 360, hover: 22 },
   { ...SPIRIT_BASE, id: 'spirit_earth', name: 'Дриада', element: 'earth', atk: 68, hp: 350 },
-  { ...SPIRIT_BASE, id: 'spirit_light', name: 'Светлячок', element: 'light', atk: 72, hp: 320 },
-  { ...SPIRIT_BASE, id: 'spirit_dark', name: 'Тень', element: 'dark', atk: 76, hp: 310 },
+  { ...SPIRIT_BASE, id: 'spirit_light', name: 'Светлячок', element: 'light', atk: 72, hp: 320, battleScale: 0.68, hover: 30 },
+  { ...SPIRIT_BASE, id: 'spirit_dark', name: 'Тень', element: 'dark', atk: 76, hp: 310, battleScale: 0.62 },
 ];
 
 export const CARDS: Record<string, CardDef> = Object.fromEntries([...HEROES, ...SPIRIT_DEFS].map((c) => [c.id, c]));

@@ -53,13 +53,20 @@ export function starRules(stage: StageDef): string[] {
   return ['Победа', `HP команды > ${Math.round(STAR_HP_RATIO * 100)}%`, `Не больше ${stage.parMoves} ходов`];
 }
 
+export interface JoinedHero {
+  id: string;
+  inTeam: boolean;
+  /** Дух, чьё место герой занял в команде. */
+  replaced?: string;
+}
+
 export interface StageResult {
   stars: number;
   gold: number;
   crystals: number;
   tickets: number;
   /** Сюжетные герои, присоединившиеся этой победой. */
-  newHeroes: string[];
+  newHeroes: JoinedHero[];
   firstClear: boolean;
   /** Награда за главу, если она выдана этой победой. */
   chapterReward?: ChapterDef['reward'];
@@ -94,6 +101,10 @@ export function applyStageWin(stageId: string, stats: BattleStats): StageResult 
   save.tickets += tickets;
   Save.write();
   // Уже открытых (например, в старых сохранениях) не выдаём повторно.
-  const joined = newHeroes.filter((id) => grantStoryHero(id));
+  const joined: JoinedHero[] = [];
+  for (const id of newHeroes) {
+    const got = grantStoryHero(id);
+    if (got) joined.push({ id, inTeam: got.inTeam, replaced: got.replaced });
+  }
   return { stars, gold, crystals, tickets, newHeroes: joined, firstClear, chapterReward };
 }

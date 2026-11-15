@@ -3,26 +3,38 @@ import { FONT } from '../config';
 import { Save } from '../core/SaveManager';
 import type { CardDef } from '../data/cards';
 import { ELEMENT_COLOR } from '../data/elements';
+import { iconText } from './icons';
 
 export function hex(color: number): string {
   return `#${color.toString(16).padStart(6, '0')}`;
 }
 
+/** Русское склонение: plural(2, 'призыв', 'призыва', 'призывов'). */
+export function plural(n: number, one: string, few: string, many: string): string {
+  const d = n % 10;
+  const dd = n % 100;
+  if (d === 1 && dd !== 11) return one;
+  if (d >= 2 && d <= 4 && (dd < 12 || dd > 14)) return few;
+  return many;
+}
+
+/** label — строка или строка с иконками (см. iconText). */
 export function button(
   scene: Phaser.Scene,
   x: number,
   y: number,
   w: number,
   h: number,
-  label: string,
+  label: string | Parameters<typeof iconText>[3],
   onClick: () => void,
   color = 0x6b3fd1,
 ): Phaser.GameObjects.Container {
   const bg = scene.add.rectangle(0, 0, w, h, color).setStrokeStyle(4, 0xffffff, 0.9);
-  const text = scene.add
-    .text(0, 0, label, { fontFamily: FONT, fontSize: `${Math.round(h * 0.38)}px`, color: '#ffffff' })
-    .setOrigin(0.5)
-    .setStroke('#000000', 5);
+  const size = Math.round(h * 0.38);
+  const text =
+    typeof label === 'string'
+      ? scene.add.text(0, 0, label, { fontFamily: FONT, fontSize: `${size}px`, color: '#ffffff' }).setOrigin(0.5).setStroke('#000000', 5)
+      : iconText(scene, 0, 0, label, { size, color: '#ffffff', stroke: 5 });
   const c = scene.add.container(x, y, [bg, text]).setSize(w, h).setInteractive({ useHandCursor: true });
   c.on('pointerdown', () => c.setScale(0.95));
   c.on('pointerout', () => c.setScale(1));
@@ -128,16 +140,25 @@ export function lockedCardView(
   return view;
 }
 
-export function currencyLabel(scene: Phaser.Scene, x: number, y: number): Phaser.GameObjects.Text {
+/** Золото, кристаллы и билеты; (x, y) — правый верхний угол. */
+export function currencyLabel(scene: Phaser.Scene, x: number, y: number): Phaser.GameObjects.Container {
   const save = Save.get();
-  return scene.add
-    .text(x, y, `Золото: ${save.gold}   💎 ${save.crystals}   🎟 ${save.tickets}`, {
-      fontFamily: FONT,
-      fontSize: '24px',
-      color: '#ffe066',
-    })
-    .setOrigin(1, 0)
-    .setStroke('#000000', 6);
+  const size = 26;
+  return iconText(
+    scene,
+    x,
+    y + size * 0.65,
+    [
+      { icon: 'icon_gold' },
+      `${save.gold}   `,
+      { icon: 'icon_crystal' },
+      `${save.crystals}   `,
+      { icon: 'icon_ticket', size: size * 1.05 },
+      `${save.tickets}`,
+    ],
+    { size, color: '#ffe066', stroke: 6 },
+    1,
+  );
 }
 
 export function title(scene: Phaser.Scene, text: string): void {
@@ -145,13 +166,6 @@ export function title(scene: Phaser.Scene, text: string): void {
     .text(360, 60, text, { fontFamily: FONT, fontSize: '44px', color: '#ffffff' })
     .setOrigin(0.5)
     .setStroke('#000000', 8);
-}
-
-export function goldLabel(scene: Phaser.Scene, gold: number): Phaser.GameObjects.Text {
-  return scene.add
-    .text(700, 20, `Золото: ${gold}`, { fontFamily: FONT, fontSize: '28px', color: '#ffe066' })
-    .setOrigin(1, 0)
-    .setStroke('#000000', 6);
 }
 
 export function menuBackground(scene: Phaser.Scene): void {

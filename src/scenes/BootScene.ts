@@ -5,6 +5,7 @@ import { ELEMENTS, ELEMENT_COLOR, type Element } from '../data/elements';
 import { ENEMIES } from '../data/enemies';
 import { backgroundNames } from '../data/story';
 import { Save } from '../core/SaveManager';
+import { makeIconTextures } from '../ui/icons';
 
 export const STONE_SIZE = 88;
 
@@ -36,6 +37,7 @@ export class BootScene extends Phaser.Scene {
   create(): void {
     for (const e of ELEMENTS) this.makeStoneTexture(e);
     this.makeSparkTexture();
+    makeIconTextures(this);
     // Для разработки: ?scene=Battle&stage=1-5, ?scene=Dialogue&stage=1-1&phase=post, ?scene=Dialogue&script=prologue,
     // ?scene=StoryMap&chapter=2, ?scene=Summon, ?scene=StarterSelect.
     const params = new URLSearchParams(location.search);

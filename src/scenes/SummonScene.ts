@@ -4,8 +4,10 @@ import { MAXED_DUPLICATE_GOLD } from '../core/collection';
 import { MAX_AWAKENING } from '../core/progression';
 import { Save } from '../core/SaveManager';
 import { SUMMON_COST, canPull, pull, pullsUntilPity, rarityRates, summonPool, type Payment, type PullResult } from '../core/summon';
+import { CARDS } from '../data/cards';
 import { ELEMENT_COLOR } from '../data/elements';
-import { button, cardView, currencyLabel, menuBackground, setButtonEnabled, title } from '../ui/widgets';
+import { offerReason, teamOffer } from '../ui/teamOffer';
+import { button, cardView, currencyLabel, menuBackground, plural, setButtonEnabled, title } from '../ui/widgets';
 
 const PORTAL = { x: GAME_W / 2, y: 330 };
 const RARITY_COLOR: Record<number, number> = { 3: 0x4aa8ff, 4: 0xb05cff, 5: 0xffd23a };
@@ -55,15 +57,19 @@ export class SummonScene extends Phaser.Scene {
     this.content.add(currencyLabel(this, GAME_W - 20, 110));
 
     const pay = (p: Payment) => () => this.summon(p);
-    const byCrystals = button(this, 200, 590, 330, 96, `Призыв · ${SUMMON_COST} 💎`, pay('crystals'), 0xd8323c);
-    const byTicket = button(this, 545, 590, 270, 96, `Билет 🎟 ×${save.tickets}`, pay('ticket'), 0x2f9e4f);
+    const byCrystals = button(this, 200, 590, 330, 96, [`Призыв · ${SUMMON_COST}`, { icon: 'icon_crystal' }], pay('crystals'), 0xd8323c);
+    const byTicket = button(this, 545, 590, 270, 96, ['Билет', { icon: 'icon_ticket' }, `×${save.tickets}`], pay('ticket'), 0x2f9e4f);
     setButtonEnabled(byCrystals, canPull('crystals'));
     setButtonEnabled(byTicket, canPull('ticket'));
     this.content.add([byCrystals, byTicket]);
 
     const pity = pullsUntilPity();
     const pityText =
-      pity === null ? 'Все герои призыва уже открыты — повторы дают пробуждение' : `Новый герой гарантирован не позже чем через ${pity} призыв(а)`;
+      pity === null
+        ? 'Все герои призыва открыты — повторы дают пробуждение'
+        : pity === 1
+          ? 'Следующий призыв — гарантированно новый герой!'
+          : `Новый герой — не позже чем через ${pity} ${plural(pity, 'призыв', 'призыва', 'призывов')}`;
     this.content.add(this.text(GAME_W / 2, 668, pityText, 20, '#c9b8ff'));
 
     const pool = summonPool();
@@ -115,14 +121,16 @@ export class SummonScene extends Phaser.Scene {
 
   /** Сфера цвета редкости вылетает из портала, пульсирует, вспышка — и карта переворачивается. */
   private async reveal(r: PullResult): Promise<void> {
+    const offer = r.acquire.kind === 'new' && !r.acquire.inTeam;
     const cx = GAME_W / 2;
-    const cy = GAME_H / 2 - 80;
+    const cy = offer ? 430 : GAME_H / 2 - 80;
+    const [cw, ch] = offer ? [228, 304] : [300, 400];
     const color = RARITY_COLOR[r.def.rarity] ?? 0xffffff;
     const layer: Phaser.GameObjects.GameObject[] = [];
     const add = <T extends Phaser.GameObjects.GameObject>(o: T): T => (layer.push(o), o);
 
     const shade = add(this.add.rectangle(cx, GAME_H / 2, GAME_W, GAME_H, 0x000000, 0).setDepth(100).setInteractive());
-    await this.tween({ targets: shade, fillAlpha: 0.85, duration: 250 });
+    await this.tween({ targets: shade, fillAlpha: offer ? 1 : 0.86, duration: 250 });
 
     const orb = add(this.add.circle(PORTAL.x, PORTAL.y, 40, color).setDepth(101));
     const halo = add(this.add.circle(PORTAL.x, PORTAL.y, 70, color, 0.35).setDepth(101));
@@ -162,9 +170,9 @@ export class SummonScene extends Phaser.Scene {
     (burst as Phaser.GameObjects.Particles.ParticleEmitter).explode(40);
 
     const owned = Save.get().cards[r.def.id];
-    const glow = add(this.add.circle(cx, cy, 240, ELEMENT_COLOR[r.def.element], 0.3).setDepth(101));
+    const glow = add(this.add.circle(cx, cy, cw * 0.8, ELEMENT_COLOR[r.def.element], 0.3).setDepth(101));
     this.tweens.add({ targets: glow, scale: 1.12, alpha: 0.12, duration: 900, yoyo: true, repeat: -1 });
-    const card = add(cardView(this, cx, cy, 300, 400, r.def, owned.level, owned.awakening).setDepth(103));
+    const card = add(cardView(this, cx, cy, cw, ch, r.def, owned.level, owned.awakening).setDepth(103));
     card.scaleX = 0;
     await this.tween({ targets: card, scaleX: 1, duration: 320, ease: 'Back.easeOut' });
 
@@ -174,28 +182,37 @@ export class SummonScene extends Phaser.Scene {
         : r.acquire.kind === 'awaken'
           ? { t: `Пробуждение +1★ (${r.acquire.awakening}/${MAX_AWAKENING})`, c: '#ffe066' }
           : { t: `+${r.acquire.gold} золота`, c: '#ffe066' };
-    const head = add(this.text(cx, cy - 250, headline.t, r.acquire.kind === 'new' ? 72 : 38, headline.c).setDepth(103).setScale(0));
+    const head = add(this.text(cx, cy - ch / 2 - 50, headline.t, r.acquire.kind === 'new' ? 72 : 38, headline.c).setDepth(103).setScale(0));
     this.tweens.add({ targets: head, scale: 1, duration: 300, ease: 'Back.easeOut' });
 
-    const inTeam = Save.get().team.includes(r.def.id);
+    const a = r.acquire;
     const sub =
-      r.acquire.kind === 'new'
-        ? inTeam
-          ? `${r.def.name} занимает место духа в команде!`
-          : `${r.def.name} добавлен в коллекцию`
-        : r.acquire.kind === 'awaken'
+      a.kind === 'new'
+        ? a.inTeam
+          ? a.replaced
+            ? `${r.def.name} занимает место духа «${CARDS[a.replaced].name}»`
+            : `${r.def.name} в команде!`
+          : offerReason(r.def.id)
+        : a.kind === 'awaken'
           ? `${r.def.name}: +10% к атаке и HP`
           : `${r.def.name}: все пробуждения уже получены`;
-    add(this.text(cx, cy + 250, sub, 26, '#ffffff').setDepth(103));
-    if (r.pity) add(this.text(cx, cy + 290, 'Сработала гарантия нового героя', 20, '#c9b8ff').setDepth(103));
-    add(this.text(cx, cy + 350, 'Нажми, чтобы продолжить', 22, '#a99cc8').setDepth(103));
+    add(this.text(cx, cy + ch / 2 + 56, sub, offer ? 22 : 26, '#ffffff').setDepth(103));
+    if (r.pity) add(this.text(cx, cy + ch / 2 + 92, 'Сработала гарантия нового героя', 20, '#c9b8ff').setDepth(103));
 
-    await this.wait(300);
-    shade.once('pointerup', () => {
+    const close = () => {
       layer.forEach((o) => o.destroy());
       this.revealing = false;
       this.render();
-    });
+    };
+    if (offer) {
+      const btn = add(button(this, cx, 1110, 400, 90, 'Оставить в коллекции', close, 0x3a3157).setDepth(103));
+      (btn.list[1] as Phaser.GameObjects.Text).setFontSize(28);
+      add(teamOffer(this, r.def.id, 900, () => (btn.list[1] as Phaser.GameObjects.Text).setText('Продолжить')).setDepth(103));
+      return;
+    }
+    add(this.text(cx, cy + ch / 2 + 130, 'Нажми, чтобы продолжить', 22, '#a99cc8').setDepth(103));
+    await this.wait(300);
+    shade.once('pointerup', close);
   }
 
   private tween(config: Phaser.Types.Tweens.TweenBuilderConfig): Promise<void> {

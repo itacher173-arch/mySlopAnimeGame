@@ -5,7 +5,11 @@ import { Save, TEAM_SIZE } from './SaveManager';
 /** Золото за повтор героя, у которого уже все пробуждения. */
 export const MAXED_DUPLICATE_GOLD = 500;
 
-export type Acquire = { kind: 'new' } | { kind: 'awaken'; awakening: number } | { kind: 'gold'; gold: number };
+/** replaced — дух, место которого новый герой занял в команде; inTeam — герой попал в команду. */
+export type Acquire =
+  | { kind: 'new'; inTeam: boolean; replaced?: string }
+  | { kind: 'awaken'; awakening: number }
+  | { kind: 'gold'; gold: number };
 
 export function owns(id: string): boolean {
   return !!Save.get().cards[id];
@@ -27,8 +31,8 @@ export function acquireHero(id: string): Acquire {
   let result: Acquire;
   if (!owned) {
     save.cards[id] = { id, level: 1, awakening: 0 };
-    placeInTeam(id);
-    result = { kind: 'new' };
+    const replaced = placeInTeam(id);
+    result = { kind: 'new', inTeam: save.team.includes(id), replaced };
   } else if (owned.awakening < MAX_AWAKENING) {
     owned.awakening++;
     result = { kind: 'awaken', awakening: owned.awakening };
@@ -40,20 +44,34 @@ export function acquireHero(id: string): Acquire {
   return result;
 }
 
-/** Сюжетный герой выдаётся один раз и без пробуждений. Возвращает true, если он новый. */
-export function grantStoryHero(id: string): boolean {
-  if (owns(id)) return false;
-  acquireHero(id);
-  return true;
+/** Сюжетный герой выдаётся один раз и без пробуждений. Возвращает null, если он уже есть. */
+export function grantStoryHero(id: string): Extract<Acquire, { kind: 'new' }> | null {
+  if (owns(id)) return null;
+  return acquireHero(id) as Extract<Acquire, { kind: 'new' }>;
 }
 
-/** Новый герой занимает слот духа своей стихии; дух уходит в запас. */
-function placeInTeam(id: string): void {
+/** Новый герой занимает слот духа своей стихии; дух уходит в запас. Возвращает id заменённого духа. */
+function placeInTeam(id: string): string | undefined {
   const save = Save.get();
   const element = CARDS[id].element;
   const slot = save.team.findIndex((t) => isSpirit(CARDS[t]) && CARDS[t].element === element);
-  if (slot >= 0) save.team[slot] = id;
-  else if (save.team.length < TEAM_SIZE) save.team.push(id);
+  if (slot >= 0) {
+    const replaced = save.team[slot];
+    save.team[slot] = id;
+    return replaced;
+  }
+  if (save.team.length < TEAM_SIZE) save.team.push(id);
+  return undefined;
+}
+
+/** Поставить героя в слот команды вручную (окно «Новый герой»); возвращает того, кого он заменил. */
+export function putInTeam(id: string, slot: number): string | undefined {
+  const save = Save.get();
+  if (save.team.includes(id)) return undefined;
+  const replaced = save.team[slot];
+  save.team[Math.min(slot, save.team.length)] = id;
+  Save.write();
+  return replaced;
 }
 
 /** Сюжетные герои, которые открываются этим этапом или главой. */

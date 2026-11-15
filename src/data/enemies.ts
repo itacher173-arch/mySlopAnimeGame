@@ -61,7 +61,7 @@ export const ENEMIES: Record<string, EnemyDef> = {
     hp: 1000,
     atk: 110,
     cooldown: 4,
-    height: 230,
+    height: 200,
   },
   goblin: {
     id: 'goblin',
@@ -103,7 +103,7 @@ export const ENEMIES: Record<string, EnemyDef> = {
     atk: 120,
     cooldown: 3,
     rank: 'boss',
-    height: 330,
+    height: 290,
     traits: [
       { kind: 'guarded', mult: 0.5 },
       { kind: 'summon', enemyId: 'goblin', every: 3, max: 3 },

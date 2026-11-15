@@ -38,6 +38,8 @@ export interface ChapterDef {
   comingSoon?: boolean;
   /** Узлы этапов на карте 720×1280, по порядку этапов. */
   nodes: { x: number; y: number }[];
+  /** Промежуточные точки тропы между соседними узлами: trail[i] — между узлами i и i+1. */
+  trail?: { x: number; y: number }[][];
   stages: StageDef[];
   reward: { gold: number; spiritStone: Element };
 }
@@ -197,11 +199,40 @@ export const SCRIPTS: Record<string, ScriptDef> = {
 
 /** Узлы вдоль тропы на chapter1_map.jpg (деревня → мост → пруд → крепость); главы-заглушки пока берут те же. */
 const DEFAULT_NODES = [
-  { x: 330, y: 960 },
-  { x: 375, y: 790 },
-  { x: 335, y: 640 },
-  { x: 255, y: 475 },
-  { x: 395, y: 235 },
+  { x: 350, y: 945 },
+  { x: 368, y: 785 },
+  { x: 322, y: 640 },
+  { x: 252, y: 470 },
+  { x: 372, y: 248 },
+];
+
+/** Изгибы тропы на chapter1_map.jpg — по центру грунтовой дороги. */
+const CHAPTER1_TRAIL = [
+  [
+    { x: 344, y: 900 },
+    { x: 348, y: 855 },
+    { x: 378, y: 820 },
+  ],
+  [
+    { x: 330, y: 755 },
+    { x: 291, y: 730 },
+    { x: 292, y: 690 },
+    { x: 310, y: 665 },
+  ],
+  [
+    { x: 332, y: 610 },
+    { x: 346, y: 575 },
+    { x: 288, y: 535 },
+    { x: 258, y: 500 },
+  ],
+  [
+    { x: 270, y: 440 },
+    { x: 305, y: 410 },
+    { x: 384, y: 378 },
+    { x: 390, y: 340 },
+    { x: 336, y: 300 },
+    { x: 365, y: 272 },
+  ],
 ];
 
 export const CHAPTERS: ChapterDef[] = [
@@ -213,6 +244,7 @@ export const CHAPTERS: ChapterDef[] = [
     element: 'earth',
     map: 'chapter1_map',
     nodes: DEFAULT_NODES,
+    trail: CHAPTER1_TRAIL,
     stages: CHAPTER1_STAGES,
     reward: { gold: 1000, spiritStone: 'earth' },
   },

@@ -91,10 +91,11 @@ export class TeamScene extends Phaser.Scene {
     const from = save.team.indexOf(id);
     const to = this.selectedSlot;
     if (from === to) return;
-    if (from >= 0) {
+    if (from >= 0 && to < save.team.length) {
       [save.team[from], save.team[to]] = [save.team[to], save.team[from]];
-    } else {
-      save.team[to] = id;
+    } else if (from < 0) {
+      // Пустой слот в неполной команде (старые сохранения) — без дыр в массиве.
+      save.team[Math.min(to, save.team.length)] = id;
     }
     Save.write();
     this.render();

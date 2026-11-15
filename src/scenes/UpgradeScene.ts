@@ -2,17 +2,16 @@ import Phaser from 'phaser';
 import { FONT, GAME_W } from '../config';
 import { cardStats, maxLevel, upgradeCost } from '../core/progression';
 import { Save } from '../core/SaveManager';
-import { CARDS } from '../data/cards';
+import { CARDS, isSpirit } from '../data/cards';
 import { ELEMENT_COLOR, ELEMENT_NAME } from '../data/elements';
 import { collectionGrid } from '../ui/collection';
-import { button, cardView, goldLabel, hex, menuBackground, setButtonEnabled, title } from '../ui/widgets';
+import { button, cardView, currencyLabel, hex, menuBackground, setButtonEnabled, title } from '../ui/widgets';
 
 const GRID_Y = 600;
 
 export class UpgradeScene extends Phaser.Scene {
   private selectedId = '';
   private content!: Phaser.GameObjects.Container;
-  private gold!: Phaser.GameObjects.Text;
 
   constructor() {
     super('Upgrade');
@@ -24,7 +23,6 @@ export class UpgradeScene extends Phaser.Scene {
     menuBackground(this);
     title(this, 'Прокачка');
     button(this, 80, 60, 120, 64, 'Назад', () => this.scene.start('MainMenu'));
-    this.gold = goldLabel(this, save.gold).setPosition(700, 110);
     this.content = this.add.container(0, 0);
     this.render();
   }
@@ -32,7 +30,7 @@ export class UpgradeScene extends Phaser.Scene {
   private render(): void {
     this.content.removeAll(true);
     const save = Save.get();
-    this.gold.setText(`Золото: ${save.gold}`);
+    this.content.add(currencyLabel(this, GAME_W - 20, 108));
 
     const owned = save.cards[this.selectedId];
     const def = CARDS[this.selectedId];
@@ -53,9 +51,11 @@ export class UpgradeScene extends Phaser.Scene {
     line(342, `Атака: ${stats.atk}${maxed ? '' : `  (+${next.atk - stats.atk})`}`);
     line(380, `HP: ${stats.hp}${maxed ? '' : `  (+${next.hp - stats.hp})`}`);
 
-    const btn = button(this, 500, 500, 340, 84, maxed ? 'Максимум' : `Улучшить: ${cost}`, () => this.upgrade(), 0x2f9e4f);
+    const btn = button(this, 500, 480, 340, 84, maxed ? 'Максимум' : [`Улучшить: ${cost}`, { icon: 'icon_gold' }], () => this.upgrade(), 0x2f9e4f);
     setButtonEnabled(btn, !maxed && save.gold >= cost);
     this.content.add(btn);
+    const note = maxed && isSpirit(def) ? `Духи растут только до ${maxLevel(def)} ур.` : !maxed && save.gold < cost ? 'Не хватает золота' : '';
+    if (note) this.content.add(this.add.text(500, 548, note, { fontFamily: FONT, fontSize: '20px', color: '#ff9a9a' }).setOrigin(0.5).setStroke('#000000', 4));
 
     this.content.add(
       collectionGrid(this, {

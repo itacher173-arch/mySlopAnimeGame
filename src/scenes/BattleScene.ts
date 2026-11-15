@@ -3,12 +3,14 @@ import { BoardModel, type Pos } from '../battle/BoardModel';
 import { BOARD_COLS, BOARD_ROWS, BOARD_X, BOARD_Y, CELL, FONT, GAME_H, GAME_W } from '../config';
 import { REWARD_LOSS, REWARD_WIN, cardStats } from '../core/progression';
 import { Save } from '../core/SaveManager';
-import { applyStageWin, starRules, type StageResult } from '../core/story';
+import { applyStageWin, starRules, type JoinedHero, type StageResult } from '../core/story';
 import { CARDS, type CardDef } from '../data/cards';
 import { ELEMENT_COLOR, ELEMENT_NAME, elementMultiplier, type Element } from '../data/elements';
 import { ENEMIES, type EnemyDef } from '../data/enemies';
 import { STAGES, STAR_HP_RATIO, type StageDef } from '../data/story';
+import { iconText } from '../ui/icons';
 import { coverImage } from '../ui/images';
+import { offerReason, teamOffer } from '../ui/teamOffer';
 import { button, cardView } from '../ui/widgets';
 import { STONE_SIZE } from './BootScene';
 
@@ -21,6 +23,8 @@ interface Unit {
   sprite: Sprite;
   x: number;
   y: number;
+  /** Центр спрайта по вертикали — сюда летят камни. */
+  cy: number;
 }
 
 /** Враг на поле. Слот — индекс в раскладке волны, по нему же призыв ищет свободное место. */
@@ -56,28 +60,31 @@ const TEAM_HP_Y = 648;
 const UNIT_H = 170;
 /** Позиции ступней героев: задний ряд выше, передний ниже. */
 const TEAM_SLOTS = [
-  { x: 85, y: 460 },
-  { x: 215, y: 440 },
-  { x: 340, y: 460 },
-  { x: 150, y: 600 },
-  { x: 285, y: 600 },
+  { x: 78, y: 460 },
+  { x: 200, y: 440 },
+  { x: 318, y: 460 },
+  { x: 140, y: 600 },
+  { x: 268, y: 600 },
 ];
 const ENEMY_H = 200;
 /** Раскладки слотов врагов (ступни) по числу врагов в волне; первый слот — главный (для босса). */
 const ENEMY_SLOTS: { x: number; y: number }[][] = [
-  [{ x: 560, y: 590 }],
+  [{ x: 580, y: 590 }],
   [
-    { x: 610, y: 600 },
-    { x: 460, y: 500 },
+    { x: 600, y: 600 },
+    { x: 430, y: 470 },
   ],
   [
-    { x: 600, y: 570 },
-    { x: 450, y: 470 },
-    { x: 470, y: 625 },
+    { x: 590, y: 580 },
+    { x: 445, y: 450 },
+    { x: 500, y: 630 },
   ],
 ];
 const FOE_BAR_W = 120;
 const FOE_UI_DEPTH = 12;
+/** Полоска врага с кружком ходов занимает ±FOE_UI_RIGHT по x от центра; соседние — не ближе FOE_UI_GAP по y. */
+const FOE_UI_RIGHT = FOE_BAR_W / 2 + 42;
+const FOE_UI_GAP = 40;
 const QUICK_WAVES = [['sukuna']];
 /** Значки стихий — полоса под полем боя, каждый под своим героем: так они не закрывают лица соседей. */
 const BADGE_Y = 624;
@@ -113,8 +120,15 @@ export class BattleScene extends Phaser.Scene {
   outcome: 'win' | 'lose' | null = null;
   private paused = false;
   private pauseLayer: Phaser.GameObjects.GameObject[] = [];
+  /** Растёт при перезапуске и закрытии сцены — оборванные анимации хода на этом останавливаются. */
+  private epoch = 0;
+  /** Эпоха, в которой начат текущий ход. Не совпала с epoch — ход брошен. */
+  private flow = 0;
+  /** Палец, который ведёт цепочку. Остальные касания его не перебивают. */
+  private dragId: number | null = null;
 
   private headerName!: Phaser.GameObjects.Text;
+  private headerSkull!: Phaser.GameObjects.Image;
   private headerElement!: Phaser.GameObjects.Text;
   private enemyHpBar!: Phaser.GameObjects.Rectangle;
   private enemyHpText!: Phaser.GameObjects.Text;
@@ -132,8 +146,14 @@ export class BattleScene extends Phaser.Scene {
 
   create(): void {
     // Сцена переиспользуется при restart(), поэтому всё состояние сбрасываем здесь.
+    const epoch = ++this.epoch;
+    this.events.once('shutdown', () => {
+      if (this.epoch === epoch) this.epoch++;
+    });
     this.busy = false;
     this.paused = false;
+    this.dragId = null;
+    this.time.paused = false;
     this.pauseLayer = [];
     this.chain = [];
     this.chainElement = null;
@@ -190,6 +210,7 @@ export class BattleScene extends Phaser.Scene {
   private createHeader(): void {
     const style = { fontFamily: FONT, fontSize: '28px', color: '#ffffff' };
     this.headerName = this.add.text(24, 16, '', style).setStroke('#000000', 6);
+    this.headerSkull = this.add.image(42, 34, 'icon_skull').setDisplaySize(40, 40).setVisible(false);
     this.headerElement = this.add
       .text(GAME_W - 24, 18, '', { ...style, fontSize: '22px' })
       .setOrigin(1, 0)
@@ -221,12 +242,18 @@ export class BattleScene extends Phaser.Scene {
   }
 
   private openPause(): void {
-    if (this.paused || this.pauseLayer.length) return;
+    if (this.paused || this.pauseLayer.length || this.outcome) return;
     this.paused = true;
+    // Замораживаем анимации хода и таймеры, чтобы враги не били за оверлеем паузы.
+    this.tweens.pauseAll();
+    this.time.paused = true;
+    this.cancelChain();
     const close = () => {
       this.pauseLayer.forEach((o) => o.destroy());
       this.pauseLayer = [];
       this.paused = false;
+      this.tweens.resumeAll();
+      this.time.paused = false;
     };
     const leave = () => (this.stage ? this.scene.start('StoryMap', { chapterId: this.stage.chapter }) : this.scene.start('MainMenu'));
     this.pauseLayer = [
@@ -259,17 +286,19 @@ export class BattleScene extends Phaser.Scene {
   }
 
   private addFoe(def: EnemyDef, slot: number, animate: boolean): Foe {
-    const { x, y } = this.slots[slot];
     const h = def.height ?? ENEMY_H;
-    const root = this.add.container(x, y).setDepth(y / 100);
     const sprite = this.unitSprite(`unit_${def.id}`, 0, 0, h, def.element, def.name, !!def.spriteFacesRight);
     const w = sprite instanceof Phaser.GameObjects.Image ? sprite.displayWidth : h * 0.55;
+    // Правый край спрайта остаётся на экране.
+    const x = Math.min(this.slots[slot].x, GAME_W - 8 - w / 2);
+    const y = this.slots[slot].y;
+    const root = this.add.container(x, y).setDepth(y / 100);
     root.add([this.add.ellipse(0, 0, Math.max(90, w * 0.8), Math.max(18, h * 0.09), 0x000000, 0.4), sprite]);
     this.breathe(sprite);
 
     // Маленькая полоска HP над головой: значок стихии, полоска, кружок с ходами до атаки.
     const barY = -h - 18;
-    const ui = this.add.container(x, y).setDepth(FOE_UI_DEPTH);
+    const ui = this.add.container(Math.min(x, GAME_W - FOE_UI_RIGHT), y).setDepth(FOE_UI_DEPTH);
     const hpBar = this.add.rectangle(-FOE_BAR_W / 2 + 2, barY, FOE_BAR_W - 4, 10, 0xd8323c).setOrigin(0, 0.5);
     const cdText = this.add
       .text(FOE_BAR_W / 2 + 22, barY, String(def.cooldown), { fontFamily: FONT, fontSize: '20px', color: '#ffffff' })
@@ -294,25 +323,63 @@ export class BattleScene extends Phaser.Scene {
     const foe: Foe = { def, hp: def.hp, cd: def.cooldown, turns: 0, slot, x, y, h, w, root, ui, sprite, hpBar, cdText, guardText };
     this.foes.push(foe);
     this.updateFoeCd(foe);
+    this.layoutFoeUi();
 
     if (animate) {
       for (const c of [root, ui]) {
-        c.x = x + 320;
+        const to = c.x;
+        c.x = to + 320;
         c.setAlpha(0);
-        this.tweens.add({ targets: c, x, alpha: 1, duration: 450, ease: 'Back.easeOut' });
+        this.tweens.add({ targets: c, x: to, alpha: 1, duration: 450, ease: 'Back.easeOut' });
       }
     }
     return foe;
+  }
+
+  /**
+   * Раздвигает полоски HP: сначала от чужих полосок, затем выше чужих спрайтов,
+   * чтобы бар жабы не ложился на слизня, а бар гоблина — на туловище хобгоблина.
+   */
+  private layoutFoeUi(): void {
+    const natural = (f: Foe) => f.y - f.h - 18;
+    const placed: { l: number; r: number; y: number; top: number }[] = [];
+    const bodies = this.foes.map((f) => ({ f, l: f.x - f.w / 2, r: f.x + f.w / 2, t: f.y - f.h, b: f.y }));
+    for (const f of [...this.foes].sort((a, b) => natural(b) - natural(a))) {
+      f.ui.x = Math.min(f.x, GAME_W - FOE_UI_RIGHT);
+      const l = f.ui.x - FOE_UI_RIGHT;
+      const r = f.ui.x + FOE_UI_RIGHT;
+      const pad = f.guardText ? 46 : 24;
+      let bar = natural(f);
+      for (let n = 0; n < 8; n++) {
+        let next = bar;
+        for (const p of placed) {
+          // top учитывает подпись «ЩИТ свиты», иначе чужая полоска садится на неё.
+          if (r > p.l && l < p.r && bar > p.top - 10 && bar < p.y + 18) next = Math.min(next, p.top - 22);
+        }
+        for (const o of bodies) {
+          if (o.f === f) continue;
+          if (r > o.l + 6 && l < o.r - 6 && bar > o.t - 6 && bar < o.b - 6) next = Math.min(next, o.t - pad);
+        }
+        if (next === bar) break;
+        bar = next;
+      }
+      // Не заезжать под шапку с именем и кнопкой паузы.
+      bar = Math.max(bar, 168);
+      placed.push({ l, r, y: bar, top: bar - (f.guardText ? 44 : 16) });
+      f.ui.y = f.y + (bar - natural(f));
+    }
   }
 
   private async killFoe(foe: Foe): Promise<void> {
     this.foes = this.foes.filter((f) => f !== foe);
     if (this.target === foe) this.selectTarget(this.foes[0] ?? null);
     this.updateGuards();
+    this.layoutFoeUi();
     const { root, ui } = foe;
     ui.destroy();
     this.burst(foe.x, foe.y - foe.h / 2, ELEMENT_COLOR[foe.def.element]);
     await this.tween({ targets: root, alpha: 0, y: foe.y + 30, duration: 380 });
+    this.guard();
     root.destroy();
   }
 
@@ -339,14 +406,35 @@ export class BattleScene extends Phaser.Scene {
     return this.target;
   }
 
+  /** Враг под пальцем: его полоска HP, затем непрозрачный пиксель спрайта (спереди назад), затем ближайший центр. */
   private foeAt(px: number, py: number): Foe | null {
-    let best: Foe | null = null;
     for (const f of this.foes) {
-      const inside = Math.abs(px - f.x) <= Math.max(f.w, 100) / 2 && py <= f.y + 20 && py >= f.y - f.h - 40;
-      // При наложении выбираем того, кто стоит ближе (ниже на экране).
-      if (inside && (!best || f.y > best.y)) best = f;
+      if (Math.abs(px - f.ui.x) <= FOE_BAR_W / 2 + 30 && Math.abs(py - (f.ui.y - f.h - 18)) <= 24) return f;
+    }
+    const front = [...this.foes].sort((a, b) => b.root.depth - a.root.depth);
+    const hit = front.find((f) => this.opaqueAt(f, px, py));
+    if (hit) return hit;
+    let best: Foe | null = null;
+    let bestD = Infinity;
+    for (const f of this.foes) {
+      const inside = Math.abs(px - f.x) <= Math.max(f.w, 100) / 2 + 10 && py <= f.y + 30 && py >= f.y - f.h - 40;
+      const d = Math.hypot(px - f.x, py - (f.y - f.h / 2));
+      if (inside && d < bestD) {
+        best = f;
+        bestD = d;
+      }
     }
     return best;
+  }
+
+  private opaqueAt(f: Foe, px: number, py: number): boolean {
+    const s = f.sprite;
+    if (!(s instanceof Phaser.GameObjects.Image)) return false;
+    const lx = (px - f.root.x) / s.scaleX + s.width / 2;
+    const ly = (py - f.root.y) / s.scaleY + s.height;
+    if (lx < 0 || ly < 0 || lx >= s.width || ly >= s.height) return false;
+    const tx = Math.floor(s.flipX ? s.width - 1 - lx : lx);
+    return (this.textures.getPixelAlpha(tx, Math.floor(ly), s.texture.key) ?? 0) > 40;
   }
 
   private guardMult(foe: Foe): number {
@@ -361,7 +449,9 @@ export class BattleScene extends Phaser.Scene {
   private updateHeader(animate: boolean): void {
     const t = this.target;
     if (!t) return;
-    this.headerName.setText(t.def.rank === 'boss' ? `☠ ${t.def.name}` : t.def.name);
+    const boss = t.def.rank === 'boss';
+    this.headerSkull.setVisible(boss);
+    this.headerName.setText(t.def.name).setX(boss ? 64 : 24);
     this.headerElement.setText(ELEMENT_NAME[t.def.element]).setColor(hex(ELEMENT_COLOR[t.def.element]));
     this.setBar(this.enemyHpBar, t.hp / t.def.hp, animate);
     this.enemyHpText.setText(`${t.hp} / ${t.def.hp}`);
@@ -396,9 +486,12 @@ export class BattleScene extends Phaser.Scene {
       .setScale(0.4)
       .setAlpha(0);
     await this.tween({ targets: banner, scale: 1, alpha: 1, duration: 300, ease: 'Back.easeOut' });
+    this.guard();
     this.spawnWave(true);
     await this.wait(500);
+    this.guard();
     await this.tween({ targets: banner, alpha: 0, y: banner.y - 40, duration: 250 });
+    this.guard();
     banner.destroy();
   }
 
@@ -410,12 +503,15 @@ export class BattleScene extends Phaser.Scene {
       const stats = cardStats(def, save.cards[id].level, save.cards[id].awakening);
       maxHp += stats.hp;
       const { x, y } = TEAM_SLOTS[i];
-      this.add.ellipse(x, y, 110, 22, 0x000000, 0.4).setDepth(y / 100 - 0.01);
-      const sprite = this.unitSprite(`unit_${def.id}`, x, y, UNIT_H * (def.battleScale ?? 1), def.element, def.name, !!def.spriteFacesLeft);
+      const h = UNIT_H * (def.battleScale ?? 1);
+      const hover = def.hover ?? 0;
+      this.add.ellipse(x, y, hover ? 80 : 110, hover ? 16 : 22, 0x000000, hover ? 0.3 : 0.4).setDepth(y / 100 - 0.01);
+      const sprite = this.unitSprite(`unit_${def.id}`, x, y - hover, h, def.element, def.name, !!def.spriteFacesLeft);
       sprite.setDepth(y / 100);
       this.add.image(x, BADGE_Y, `stone_${def.element}`).setScale(0.3).setDepth(BADGE_DEPTH);
-      this.breathe(sprite);
-      this.team.push({ def, atk: stats.atk, sprite, x, y });
+      if (hover) this.tweens.add({ targets: sprite, y: sprite.y - 8, duration: 1100 + Math.random() * 300, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+      else this.breathe(sprite);
+      this.team.push({ def, atk: stats.atk, sprite, x, y, cy: y - hover - h / 2 });
     });
 
     this.teamMaxHp = maxHp;
@@ -464,7 +560,9 @@ export class BattleScene extends Phaser.Scene {
 
   private setupInput(): void {
     this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
-      if (this.paused) return;
+      if (this.paused || this.outcome) return;
+      // Второй палец не начинает новую цепочку и не сбрасывает уже ведущуюся.
+      if (this.dragId !== null && p.id !== this.dragId) return;
       if (p.y < FIELD_H) {
         const foe = this.foeAt(p.x, p.y);
         if (foe && foe !== this.target) this.selectTarget(foe);
@@ -473,13 +571,14 @@ export class BattleScene extends Phaser.Scene {
       if (this.busy) return;
       const pos = cellAt(p.x, p.y, 0.75);
       if (!pos) return;
+      this.dragId = p.id;
       this.chain = [pos];
       this.chainElement = this.model.get(pos);
       this.refreshChain();
     });
 
     this.input.on('pointermove', (p: Phaser.Input.Pointer) => {
-      if (this.busy || this.paused || !this.chainElement || !p.isDown) return;
+      if (p.id !== this.dragId || this.busy || this.paused || !this.chainElement || !p.isDown) return;
       const pos = cellAt(p.x, p.y, PICK_RADIUS);
       if (!pos) return;
       const last = this.chain[this.chain.length - 1];
@@ -500,17 +599,32 @@ export class BattleScene extends Phaser.Scene {
       this.refreshChain();
     });
 
-    const release = () => {
-      if (!this.chainElement) return;
-      const chain = this.chain;
-      const element = this.chainElement;
-      this.chain = [];
-      this.chainElement = null;
-      this.refreshChain();
-      if (chain.length >= MIN_CHAIN) void this.resolveChain(chain, element);
-    };
-    this.input.on('pointerup', release);
-    this.input.on('gameout', release);
+    this.input.on('pointerup', (p: Phaser.Input.Pointer) => this.release(p));
+    this.input.on('gameout', () => this.release(null));
+  }
+
+  /** Завершает цепочку. Чужой палец и повторный pointerup ход не удваивают. */
+  private release(p: Phaser.Input.Pointer | null): void {
+    if (this.dragId === null) return;
+    if (p && p.id !== this.dragId) return;
+    this.dragId = null;
+    if (!this.chainElement || this.paused || this.busy) {
+      this.cancelChain();
+      return;
+    }
+    const chain = this.chain;
+    const element = this.chainElement;
+    this.chain = [];
+    this.chainElement = null;
+    this.refreshChain();
+    if (chain.length >= MIN_CHAIN) void this.resolveChain(chain, element);
+  }
+
+  private cancelChain(): void {
+    this.dragId = null;
+    this.chain = [];
+    this.chainElement = null;
+    this.refreshChain();
   }
 
   private refreshChain(): void {
@@ -556,6 +670,23 @@ export class BattleScene extends Phaser.Scene {
   // ---------- ход ----------
 
   private async resolveChain(chain: Pos[], element: Element): Promise<void> {
+    const epoch = this.epoch;
+    try {
+      await this.playChain(chain, element);
+    } catch (e) {
+      if (e instanceof BattleGone || epoch !== this.epoch) return;
+      console.error(e);
+      this.busy = false;
+    }
+  }
+
+  private guard(): void {
+    // flow === 0 — ход игрока не идёт (отладка, смена волны снаружи). Иначе эпоха сцены уже другая.
+    if (this.flow !== 0 && this.flow !== this.epoch) throw new BattleGone();
+  }
+
+  private async playChain(chain: Pos[], element: Element): Promise<void> {
+    this.flow = this.epoch;
     this.busy = true;
     this.moves++;
     this.updateInfo();
@@ -569,7 +700,7 @@ export class BattleScene extends Phaser.Scene {
       this.stones[p.r][p.c] = null;
       const fx = this.add.image(s.x, s.y, s.texture.key).setScale(1.12).setDepth(30);
       s.destroy();
-      const to = target ? { x: target.x, y: target.y - UNIT_H / 2, alpha: 0.7 } : { alpha: 0 };
+      const to = target ? { x: target.x, y: target.cy, alpha: 0.7 } : { alpha: 0 };
       return this.tween({
         targets: fx,
         ...to,
@@ -583,11 +714,14 @@ export class BattleScene extends Phaser.Scene {
     const refill = this.dropStones();
 
     await Promise.all(absorbs);
+    this.guard();
     for (const unit of attackers) {
       if (this.foes.length === 0) break;
       await this.heroAttack(unit, chain.length);
+      this.guard();
     }
     await refill;
+    this.guard();
 
     if (this.foes.length === 0) {
       if (this.waveIndex >= this.waves.length - 1) return this.finish(true);
@@ -596,8 +730,10 @@ export class BattleScene extends Phaser.Scene {
       await this.enemyTurn();
       if (this.teamHp <= 0) return this.finish(false);
     }
+    this.guard();
 
     if (!this.model.hasChain()) await this.reshuffle();
+    this.guard();
     this.busy = false;
   }
 
@@ -631,10 +767,12 @@ export class BattleScene extends Phaser.Scene {
     const color = ELEMENT_COLOR[unit.def.element];
 
     await this.tween({ targets: unit.sprite, x: unit.x + 50, duration: 120, ease: 'Quad.easeOut' });
+    this.guard();
 
-    const from = { x: unit.x + 40, y: unit.y - UNIT_H * 0.55 };
+    const from = { x: unit.x + 40, y: unit.cy };
     const to = { x: foe.x, y: foe.y - foe.h * 0.5 };
-    const orb = this.add.image(from.x, from.y, `stone_${unit.def.element}`).setScale(0.45).setDepth(40);
+    // Ниже полосок HP (глубина 12), но выше спрайтов — снаряд не затирает цифры ходов.
+    const orb = this.add.image(from.x, from.y, `stone_${unit.def.element}`).setScale(0.45).setDepth(11);
     const trail = this.add
       .particles(0, 0, 'spark', {
         follow: orb,
@@ -646,10 +784,11 @@ export class BattleScene extends Phaser.Scene {
         tint: color,
         blendMode: 'ADD',
       })
-      .setDepth(39);
+      .setDepth(10);
 
-    void this.tween({ targets: unit.sprite, x: unit.x, duration: 220, ease: 'Quad.easeInOut' });
+    this.tweens.add({ targets: unit.sprite, x: unit.x, duration: 220, ease: 'Quad.easeInOut' });
     await this.tween({ targets: orb, x: to.x, y: to.y, angle: 360, duration: 280, ease: 'Quad.easeIn' });
+    this.guard();
     orb.destroy();
     trail.stop();
     this.time.delayedCall(400, () => trail.destroy());
@@ -663,6 +802,7 @@ export class BattleScene extends Phaser.Scene {
     this.updateFoeHp(foe);
     if (foe.hp <= 0) await this.killFoe(foe);
     else await this.wait(250);
+    this.guard();
   }
 
   private async enemyTurn(): Promise<void> {
@@ -671,13 +811,16 @@ export class BattleScene extends Phaser.Scene {
       if (!this.foes.includes(foe)) continue;
       foe.turns++;
       await this.trySummon(foe);
+      this.guard();
       foe.cd--;
       this.updateFoeCd(foe);
       if (foe.cd > 0) continue;
       await this.foeAttack(foe);
+      this.guard();
       if (this.teamHp <= 0) return;
     }
     await this.wait(150);
+    this.guard();
   }
 
   private async trySummon(foe: Foe): Promise<void> {
@@ -688,15 +831,18 @@ export class BattleScene extends Phaser.Scene {
       if (!def || slot < 0) continue;
       this.floatText(foe.x, foe.y - foe.h - 70, 'Призыв!', 0xffe066, 36);
       await this.tween({ targets: foe.root, scaleY: 1.08, duration: 150, yoyo: true });
+      this.guard();
       this.addFoe(def, slot, true);
       this.updateGuards();
       await this.wait(450);
+      this.guard();
     }
   }
 
   private async foeAttack(foe: Foe): Promise<void> {
     const boss = foe.def.rank === 'boss';
     await this.tween({ targets: foe.root, x: foe.x - (boss ? 140 : 90), duration: 160, ease: 'Quad.easeIn' });
+    this.guard();
     this.cameras.main.shake(250, boss ? 0.012 : 0.006);
     this.cameras.main.flash(150, 120, 0, 0);
     for (const u of this.team) this.flash(u.sprite, 0xff3030);
@@ -704,14 +850,17 @@ export class BattleScene extends Phaser.Scene {
     this.floatText(220, 420, `-${foe.def.atk}`, 0xff4040, 52);
     this.updateTeamHp(true);
     await this.tween({ targets: foe.root, x: foe.x, duration: 260, ease: 'Quad.easeOut' });
+    this.guard();
     foe.cd = foe.def.cooldown;
     this.updateFoeCd(foe);
     await this.wait(200);
+    this.guard();
   }
 
   private async reshuffle(): Promise<void> {
     this.floatText(GAME_W / 2, BOARD_Y + (BOARD_ROWS * CELL) / 2, 'Нет цепочек — перемешиваю', 0xffffff, 32);
     await Promise.all(this.stones.flat().map((s) => this.tween({ targets: s, alpha: 0, scale: 0, duration: 250 })));
+    this.guard();
     this.stones.flat().forEach((s) => s?.destroy());
     this.model.shuffle();
     this.buildStones();
@@ -721,6 +870,7 @@ export class BattleScene extends Phaser.Scene {
         return this.tween({ targets: s, scale: 1, duration: 250 });
       }),
     );
+    this.guard();
   }
 
   private finish(win: boolean): void {
@@ -738,7 +888,10 @@ export class BattleScene extends Phaser.Scene {
       Save.get().gold += reward;
       Save.write();
     }
-    this.time.delayedCall(400, () => this.showResult(win, reward, result));
+    const epoch = this.epoch;
+    this.time.delayedCall(400, () => {
+      if (epoch === this.epoch) this.showResult(win, reward, result);
+    });
   }
 
   private showResult(win: boolean, reward: number, result: StageResult | null): void {
@@ -751,7 +904,7 @@ export class BattleScene extends Phaser.Scene {
         .setStroke('#000000', Math.round(size / 7))
         .setDepth(101);
 
-    this.add.rectangle(cx, cy, GAME_W, GAME_H, 0x000000, 0.75).setDepth(100).setInteractive();
+    this.add.rectangle(cx, cy, GAME_W, GAME_H, 0x000000, 0.82).setDepth(100).setInteractive();
     text(cy - 300, win ? 'ПОБЕДА!' : 'ПОРАЖЕНИЕ', 80, win ? '#ffe066' : '#ff5a5a');
 
     const stage = this.stage;
@@ -767,26 +920,25 @@ export class BattleScene extends Phaser.Scene {
         this.tweens.add({ targets: star, scale: 1, delay: 200 + i * 220, duration: 300, ease: 'Back.easeOut' });
       });
       starRules(stage).forEach((rule, i) => {
-        const detail = i === 1 ? ` (${Math.round((this.teamHp / this.teamMaxHp) * 100)}%)` : i === 2 ? ` (${this.moves})` : '';
+        const detail = i === 1 ? ` (${hpPercent(this.teamHp, this.teamMaxHp, STAR_HP_RATIO)})` : i === 2 ? ` (${this.moves})` : '';
         text(cy - 80 + i * 36, `${stars[i] ? '✔' : '✘'} ${rule}${detail}`, 24, stars[i] ? '#b8ffb8' : '#ff9a9a');
       });
-      text(cy + 30, `+${reward} золота${result.firstClear ? ' (первое прохождение)' : ''}`, 28, '#ffe066');
-      const extra = [
-        result.crystals > 0 ? `+${result.crystals} 💎 кристаллов` : '',
-        result.tickets > 0 ? `+${result.tickets} 🎟 билет призыва` : '',
-      ].filter(Boolean);
-      if (extra.length) text(cy + 70, extra.join('   '), 26, '#8fe8ff');
-      let ry = cy + 110;
-      for (const id of result.newHeroes) {
-        text(ry, `Новый герой: ${CARDS[id].name}!`, 28, '#ffb0f0');
+      const loot: Parameters<typeof iconText>[3] = [{ icon: 'icon_gold' }, `+${reward}`];
+      if (result.crystals > 0) loot.push('    ', { icon: 'icon_crystal' }, `+${result.crystals}`);
+      if (result.tickets > 0) loot.push('    ', { icon: 'icon_ticket' }, `+${result.tickets}`);
+      iconText(this, cx, cy + 36, loot, { size: 32, color: '#ffe066', stroke: 6 }).setDepth(101);
+      if (result.firstClear) text(cy + 76, 'Первое прохождение', 20, '#c9b8ff');
+      let ry = cy + 112;
+      for (const h of result.newHeroes) {
+        text(ry, `Новый герой: ${CARDS[h.id].name}!`, 28, '#ffb0f0');
         ry += 38;
       }
       if (result.chapterReward) {
         text(ry, `Получен Камень Духа: ${ELEMENT_NAME[result.chapterReward.spiritStone]}!`, 28, hex(ELEMENT_COLOR[result.chapterReward.spiritStone]));
       }
-      if (result.newHeroes.length) this.time.delayedCall(900, () => this.showNewHero(result.newHeroes[0]));
+      if (result.newHeroes.length) this.showNewHero(result.newHeroes[0]);
     } else if (reward > 0) {
-      text(cy - 30, `+${reward} золота`, 36, '#ffe066');
+      iconText(this, cx, cy - 30, [{ icon: 'icon_gold' }, `+${reward}`], { size: 40, color: '#ffe066', stroke: 6 }).setDepth(101);
     }
 
     const by = cy + 240;
@@ -806,43 +958,66 @@ export class BattleScene extends Phaser.Scene {
     }
   }
 
-  /** Всплывающее окно «Новый герой!» поверх итогов боя; закрывается тапом. */
-  private showNewHero(id: string): void {
-    const def = CARDS[id];
+  /**
+   * Всплывающее окно «Новый герой!» поверх итогов боя. Если герой не встал в команду сам (место его стихии занято
+   * героем), предлагаем выбрать, кого он заменит.
+   */
+  private showNewHero(hero: JoinedHero): void {
+    const def = CARDS[hero.id];
+    const offer = !hero.inTeam;
     const cx = GAME_W / 2;
-    const cy = GAME_H / 2 - 60;
-    const bg = this.add.rectangle(cx, GAME_H / 2, GAME_W, GAME_H, 0x000000, 0.8).setDepth(110).setInteractive();
-    const glow = this.add.circle(cx, cy, 230, ELEMENT_COLOR[def.element], 0.35).setDepth(110);
-    const owned = Save.get().cards[id];
-    const card = cardView(this, cx, cy, 300, 400, def, owned?.level, owned?.awakening).setDepth(111).setScale(0);
-    const inTeam = Save.get().team.includes(id);
-    const parts = [
+    const cy = offer ? 450 : GAME_H / 2 - 60;
+    const [cw, ch] = offer ? [228, 304] : [300, 400];
+    const bg = this.add.rectangle(cx, GAME_H / 2, GAME_W, GAME_H, 0x07060f, 1).setDepth(110).setInteractive();
+    const glow = this.add.circle(cx, cy, cw * 0.77, ELEMENT_COLOR[def.element], 0.35).setDepth(110);
+    const owned = Save.get().cards[hero.id];
+    const card = cardView(this, cx, cy, cw, ch, def, owned?.level, owned?.awakening).setDepth(111).setScale(0);
+    const status = offer
+      ? offerReason(hero.id)
+      : hero.replaced
+        ? `${def.name} занимает место духа «${CARDS[hero.replaced].name}»`
+        : `${def.name} в команде!`;
+    const parts: Phaser.GameObjects.GameObject[] = [
       bg,
       glow,
       card,
       this.add
-        .text(cx, cy - 260, 'НОВЫЙ ГЕРОЙ!', { fontFamily: FONT, fontSize: '60px', color: '#ffb0f0' })
+        .text(cx, cy - ch / 2 - 56, 'НОВЫЙ ГЕРОЙ!', { fontFamily: FONT, fontSize: '60px', color: '#ffb0f0' })
         .setOrigin(0.5)
         .setStroke('#000000', 10)
         .setDepth(111),
       this.add
-        .text(cx, cy + 250, inTeam ? `${def.name} уже в команде!` : `${def.name} ждёт в коллекции`, {
+        .text(cx, cy + ch / 2 + 44, status, {
           fontFamily: FONT,
-          fontSize: '30px',
+          fontSize: offer ? '24px' : '28px',
           color: '#ffffff',
+          align: 'center',
+          wordWrap: { width: GAME_W - 60 },
         })
         .setOrigin(0.5)
         .setStroke('#000000', 7)
         .setDepth(111),
-      this.add
-        .text(cx, cy + 300, 'Нажми, чтобы продолжить', { fontFamily: FONT, fontSize: '22px', color: '#c9b8ff' })
-        .setOrigin(0.5)
-        .setDepth(111),
     ];
+    const close = () => parts.forEach((p) => p.destroy());
+    if (offer) {
+      const btn = button(this, cx, 1090, 400, 90, 'Оставить в коллекции', close, 0x3a3157).setDepth(111);
+      (btn.list[1] as Phaser.GameObjects.Text).setFontSize(28);
+      parts.push(
+        teamOffer(this, hero.id, 880, () => (btn.list[1] as Phaser.GameObjects.Text).setText('Продолжить')).setDepth(111),
+        btn,
+      );
+    } else {
+      parts.push(
+        this.add
+          .text(cx, cy + ch / 2 + 100, 'Нажми, чтобы продолжить', { fontFamily: FONT, fontSize: '22px', color: '#c9b8ff' })
+          .setOrigin(0.5)
+          .setDepth(111),
+      );
+      bg.once('pointerup', close);
+    }
     this.tweens.add({ targets: card, scale: 1, duration: 450, ease: 'Back.easeOut' });
     this.tweens.add({ targets: glow, scale: 1.15, alpha: 0.15, duration: 800, yoyo: true, repeat: -1 });
     this.burst(cx, cy, ELEMENT_COLOR[def.element]);
-    bg.once('pointerup', () => parts.forEach((p) => p.destroy()));
   }
 
   // ---------- помощники ----------
@@ -927,13 +1102,42 @@ export class BattleScene extends Phaser.Scene {
   }
 
   private tween(config: Phaser.Types.Tweens.TweenBuilderConfig): Promise<void> {
-    return new Promise((resolve) => this.tweens.add({ ...config, onComplete: () => resolve() }));
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        this.events.off('shutdown', onShutdown);
+        resolve();
+      };
+      const onShutdown = () => finish();
+      this.events.once('shutdown', onShutdown);
+      this.tweens.add({ ...config, onComplete: finish, onStop: finish });
+    });
   }
 
   private wait(ms: number): Promise<void> {
-    return new Promise((resolve) => this.time.delayedCall(ms, resolve));
+    return new Promise((resolve) => {
+      let settled = false;
+      let ev: Phaser.Time.TimerEvent | null = null;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        this.events.off('shutdown', onShutdown);
+        resolve();
+      };
+      const onShutdown = () => {
+        ev?.remove(false);
+        finish();
+      };
+      ev = this.time.delayedCall(ms, finish);
+      this.events.once('shutdown', onShutdown);
+    });
   }
 }
+
+/** Ход прерван закрытием сцены — обещание анимации больше некуда вести. */
+class BattleGone extends Error {}
 
 function cellX(c: number): number {
   return BOARD_X + c * CELL + CELL / 2;
@@ -953,6 +1157,13 @@ function cellAt(x: number, y: number, radius: number): Pos | null {
   if (p.r < 0 || p.r >= BOARD_ROWS || p.c < 0 || p.c >= BOARD_COLS) return null;
   if (Math.hypot(x - cellX(p.c), y - cellY(p.r)) > radius * CELL) return null;
   return p;
+}
+
+/** Процент HP для итогов: у порога звезды показываем десятые, чтобы «50%» не спорило с условием «> 50%». */
+function hpPercent(hp: number, max: number, threshold: number): string {
+  const pct = (hp / max) * 100;
+  const whole = Math.floor(pct);
+  return Math.abs(pct - threshold * 100) < 1 ? `${pct.toFixed(1)}%` : `${whole}%`;
 }
 
 function rankWeight(def: EnemyDef): number {

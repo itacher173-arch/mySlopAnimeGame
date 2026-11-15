@@ -64,7 +64,7 @@ export class MainMenuScene extends Phaser.Scene {
       this.add
         .text(cx, cy - 70, 'Герои, золото, кристаллы и сюжет будут удалены.\nЭто нельзя отменить.', {
           fontFamily: FONT,
-          fontSize: '24px',
+          fontSize: '22px',
           color: '#ff9a9a',
           align: 'center',
         })

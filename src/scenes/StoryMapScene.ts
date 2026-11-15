@@ -5,7 +5,7 @@ import { isChapterComplete, isChapterOpen, isStageOpen, stageStars } from '../co
 import { ELEMENT_COLOR, ELEMENT_NAME } from '../data/elements';
 import { CHAPTERS, STAGE_GOLD_FIRST, STAGE_GOLD_REPEAT, STAR_HP_RATIO, type ChapterDef } from '../data/story';
 import { coverImage } from '../ui/images';
-import { button, goldLabel } from '../ui/widgets';
+import { button, currencyLabel } from '../ui/widgets';
 
 const TABS_Y = 1222;
 const NODE_R = 46;
@@ -31,7 +31,7 @@ export class StoryMapScene extends Phaser.Scene {
     const bars = this.add.graphics();
     bars.fillStyle(0x0d0b1a, 0.85).fillRect(0, 0, GAME_W, 80).fillRect(0, TABS_Y - 50, GAME_W, GAME_H - TABS_Y + 50);
     button(this, 80, 40, 130, 56, 'Назад', () => this.scene.start('MainMenu'), 0x3a3157);
-    goldLabel(this, Save.get().gold);
+    currencyLabel(this, GAME_W - 20, 16);
     this.drawTabs();
   }
 
@@ -116,7 +116,7 @@ export class StoryMapScene extends Phaser.Scene {
     const pts = ch.nodes.slice(0, ch.stages.length);
     for (let i = 1; i < pts.length; i++) {
       const cleared = stageStars(ch.stages[i - 1].id) > 0;
-      dashedLine(path, pts[i - 1], pts[i], cleared ? 0xffe066 : 0xffffff, cleared ? 1 : 0.5);
+      dottedTrail(path, [pts[i - 1], ...(ch.trail?.[i - 1] ?? []), pts[i]], cleared ? 0xffe066 : 0xffffff, cleared ? 1 : 0.6);
     }
     this.layer.add(path);
 
@@ -130,14 +130,13 @@ export class StoryMapScene extends Phaser.Scene {
 
       const node = this.add.container(x, y);
       const circle = this.add.circle(0, 0, r, fill).setStrokeStyle(5, open ? 0xffffff : 0x8a84a0);
-      const label = this.add
-        .text(0, -2, open ? (boss ? '☠' : String(i + 1)) : '🔒', {
-          fontFamily: FONT,
-          fontSize: `${Math.round(r * 0.9)}px`,
-          color: open ? '#ffffff' : '#bbbbbb',
-        })
-        .setOrigin(0.5)
-        .setStroke('#000000', 6);
+      const label =
+        open && !boss
+          ? this.add
+              .text(0, -2, String(i + 1), { fontFamily: FONT, fontSize: `${Math.round(r * 0.9)}px`, color: '#ffffff' })
+              .setOrigin(0.5)
+              .setStroke('#000000', 6)
+          : this.add.image(0, -2, open ? 'icon_skull' : 'icon_lock').setDisplaySize(r * 1.15, r * 1.15);
       node.add([circle, label]);
 
       for (let s = 0; s < 3; s++) {
@@ -172,13 +171,13 @@ export class StoryMapScene extends Phaser.Scene {
   }
 
   private drawRules(ch: ChapterDef): void {
-    const y = 1088;
+    const y = 1076;
     const claimed = Save.get().story.chaptersClaimed.includes(ch.id);
     const reward = claimed
       ? `Камень Духа (${ELEMENT_NAME[ch.reward.spiritStone]}) получен ✔`
       : `За главу: Камень Духа (${ELEMENT_NAME[ch.reward.spiritStone]}) + ${ch.reward.gold} золота`;
     this.layer.add([
-      this.add.rectangle(GAME_W / 2, y + 36, GAME_W - 24, 108, 0x000000, 0.6).setStrokeStyle(2, 0xffffff, 0.4),
+      this.add.rectangle(GAME_W / 2, y + 35, GAME_W - 24, 100, 0x000000, 0.6).setStrokeStyle(2, 0xffffff, 0.4),
       this.add
         .text(GAME_W / 2, y, `★ победа   ★ HP > ${Math.round(STAR_HP_RATIO * 100)}%   ★ лимит ходов этапа`, {
           fontFamily: FONT,
@@ -201,18 +200,15 @@ export class StoryMapScene extends Phaser.Scene {
   }
 }
 
-function dashedLine(
-  g: Phaser.GameObjects.Graphics,
-  a: { x: number; y: number },
-  b: { x: number; y: number },
-  color: number,
-  alpha: number,
-): void {
-  const len = Math.hypot(b.x - a.x, b.y - a.y);
-  const steps = Math.floor(len / 34);
-  for (let i = 0; i <= steps; i++) {
-    const t = i / steps;
-    g.fillStyle(0x000000, 0.5 * alpha).fillCircle(a.x + (b.x - a.x) * t + 2, a.y + (b.y - a.y) * t + 3, 9);
-    g.fillStyle(color, alpha).fillCircle(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, 8);
+/** Пунктир по плавной кривой через точки тропы; точки под кружками узлов не рисуем. */
+function dottedTrail(g: Phaser.GameObjects.Graphics, points: { x: number; y: number }[], color: number, alpha: number): void {
+  const curve = new Phaser.Curves.Spline(points.map((p) => new Phaser.Math.Vector2(p.x, p.y)));
+  const a = points[0];
+  const b = points[points.length - 1];
+  const dots = curve.getSpacedPoints(Math.max(2, Math.round(curve.getLength() / 30)));
+  for (const p of dots) {
+    if (Math.hypot(p.x - a.x, p.y - a.y) < NODE_R + 6 || Math.hypot(p.x - b.x, p.y - b.y) < NODE_R * 1.3 + 6) continue;
+    g.fillStyle(0x000000, 0.55 * alpha).fillCircle(p.x + 2, p.y + 3, 8);
+    g.fillStyle(color, alpha).fillCircle(p.x, p.y, 7);
   }
 }

@@ -92,7 +92,15 @@ export const Save = {
     for (const c of Object.values(cache.cards)) c.awakening ??= 0;
     // Духи принадлежат игроку всегда — в том числе в сохранениях, сделанных до их появления.
     for (const id of SPIRIT_IDS) cache.cards[id] ??= { id, level: 1, awakening: 0 };
-    cache.team = cache.team.filter((id) => cache!.cards[id]);
+    cache.team = cache.team.filter((id, i, all) => cache!.cards[id] && all.indexOf(id) === i);
+    // Команда могла уменьшиться (удалённые карты, старые версии) — недостающие стихии закрывают духи.
+    if (cache.started) {
+      for (const id of SPIRIT_IDS) {
+        if (cache.team.length >= TEAM_SIZE) break;
+        const e = CARDS[id].element;
+        if (!cache.team.some((t) => CARDS[t].element === e)) cache.team.push(id);
+      }
+    }
     return cache;
   },
 
