@@ -53,10 +53,13 @@ export class DialogueScene extends Phaser.Scene {
       const pre = (data.phase ?? 'pre') === 'pre';
       this.title = `${stage.id}  ${stage.title}`;
       this.background = stage.background;
-      this.next = pre ? { scene: 'Battle', data: { stageId: stage.id } } : { scene: 'StoryMap', data: { chapterId: stage.chapter } };
+      this.next = pre ? { scene: 'Battle', data: { stageId: stage.id } } : { 
+        scene: 'StoryMap', 
+        data: { chapterId: data.stageId || '1-1', stage: STAGES['1-1'] } 
+      };
       lines = pre ? stage.pre : stage.post;
     }
-    // «starter» — выбранный игроком герой (в старых сохранениях — лидер команды).
+
     const save = Save.get();
     const starter = save.starter ?? save.team.find((id) => !CARDS[id]?.kind) ?? 'naruto';
     this.lines = lines
@@ -70,42 +73,38 @@ export class DialogueScene extends Phaser.Scene {
 
   create(): void {
     const bgKey = `bg_${this.background}`;
+    // Прелоадер — ждём загрузки текстур и создаём фон диалога
     if (this.textures.exists(bgKey)) coverImage(this, bgKey, GAME_W / 2, GAME_H / 2, GAME_W, GAME_H);
     else menuBackground(this);
+
     this.add.rectangle(0, 0, GAME_W, GAME_H, 0x000000, 0.45).setOrigin(0);
 
-    this.add
-      .text(GAME_W / 2, 70, this.title, { fontFamily: FONT, fontSize: '34px', color: '#ffe066' })
+    // Текст заголовка пролога
+    this.add.text(GAME_W / 2, 70, this.title, { fontFamily: FONT, fontSize: '34px', color: '#ffe066' })
       .setOrigin(0.5)
       .setStroke('#000000', 8);
 
     const g = this.add.graphics().setDepth(5);
-    g.fillStyle(0x0d0b1a, 0.92).fillRoundedRect(16, BOX_Y, GAME_W - 32, BOX_H, 18);
-    g.lineStyle(4, 0xffffff, 0.8).strokeRoundedRect(16, BOX_Y, GAME_W - 32, BOX_H, 18);
+    g.fillStyle(0x0d0b1a, 0x92).fillRoundedRect(16, BOX_Y, GAME_W - 32, BOX_H, 18);
+    g.lineStyle(4, 0xffffff, 0x8).strokeRoundedRect(16, BOX_Y, GAME_W - 32, BOX_H, 18);
 
     this.portrait = this.add.container(36 + PORTRAIT / 2, BOX_Y + 30 + PORTRAIT / 2).setDepth(6);
-    this.nameText = this.add
-      .text(36, BOX_Y - 18, '', { fontFamily: FONT, fontSize: '30px', color: '#ffe066' })
+    this.nameText = this.add.text(36, BOX_Y - 18, '', { fontFamily: FONT, fontSize: '30px', color: '#ffe066' })
       .setOrigin(0, 1)
       .setStroke('#000000', 7)
       .setDepth(6);
-    this.bodyText = this.add
-      .text(36 + PORTRAIT + 22, BOX_Y + 28, '', {
-        fontFamily: FONT,
-        fontSize: '26px',
-        color: '#ffffff',
-        wordWrap: { width: GAME_W - 32 - PORTRAIT - 62, useAdvancedWrap: true },
-        lineSpacing: 6,
-      })
-      .setDepth(6);
-    this.hint = this.add
-      .text(GAME_W - 40, BOX_Y + BOX_H - 22, '▼', { fontFamily: FONT, fontSize: '26px', color: '#ffe066' })
+    this.bodyText = this.add.text(36 + PORTRAIT + 22, BOX_Y + 28, '', {
+      fontFamily: FONT, fontSize: '26px', color: '#ffffff',
+      wordWrap: { width: GAME_W - 32 - PORTRAIT - 62, useAdvancedWrap: true },
+      lineSpacing: 6,
+    }).setDepth(6);
+    this.hint = this.add.text(GAME_W - 40, BOX_Y + BOX_H - 22, '▼', { fontFamily: FONT, fontSize: '26px', color: '#ffe066' })
       .setOrigin(1, 1)
       .setDepth(6);
     this.tweens.add({ targets: this.hint, y: this.hint.y + 8, duration: 450, yoyo: true, repeat: -1 });
 
     const skip = button(this, GAME_W - 120, 150, 200, 64, 'Пропустить', () => this.finish(), 0x3a3157).setDepth(10);
-    this.input.on('pointerup', (_p: Phaser.Input.Pointer, over: Phaser.GameObjects.GameObject[]) => {
+    this.input.on('pointerup', (_p: unknown, over: Phaser.GameObjects.GameObject[]) => {
       if (over.includes(skip)) return;
       this.advance();
     });
@@ -121,11 +120,11 @@ export class DialogueScene extends Phaser.Scene {
       this.typing = null;
       this.bodyText.setText(this.fullText);
       this.hint.setVisible(true);
-      return;
+    } else {
+      this.index++;
+      if (this.index >= this.lines.length) this.finish();
+      else this.showLine();
     }
-    this.index++;
-    if (this.index >= this.lines.length) this.finish();
-    else this.showLine();
   }
 
   private showLine(): void {
@@ -200,6 +199,7 @@ export class DialogueScene extends Phaser.Scene {
     if (this.done) return;
     this.done = true;
     this.typing?.remove();
+    console.log(`[Dialogue] transition to ${this.next.scene} with data:`, this.next.data);
     this.scene.start(this.next.scene, this.next.data);
   }
 }

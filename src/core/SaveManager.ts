@@ -28,8 +28,10 @@ export interface SaveData {
   tickets: number;
   /** Только полученные карты: духи есть всегда, герои — из стартера, сюжета и призыва. */
   cards: Record<string, OwnedCard>;
-  /** Состав команды: id карт, первая — лидер. */
+  /** Состав команды: id карт по слотам. */
   team: string[];
+  /** Название команды. Пустое сохранение получает «5ка». */
+  teamName: string;
   story: StoryProgress;
   /** Призывов подряд без нового героя — для гарантии. */
   pullsSinceNew: number;
@@ -37,6 +39,8 @@ export interface SaveData {
 
 const KEY = 'spirit-stones-anime/save';
 export const TEAM_SIZE = 5;
+export const DEFAULT_TEAM_NAME = '5ка';
+const TEAM_NAME_LIMIT = 16;
 
 function freshStory(): StoryProgress {
   return { stars: {}, chaptersClaimed: [], spiritStones: [] };
@@ -52,6 +56,7 @@ function fresh(): SaveData {
     tickets: 0,
     cards: {},
     team: [],
+    teamName: DEFAULT_TEAM_NAME,
     story: freshStory(),
     pullsSinceNew: 0,
   };
@@ -72,6 +77,7 @@ function migrate(data: Partial<SaveData> & { version?: number }): SaveData {
     started: data.started ?? (legacy && (data.team?.length ?? 0) > 0),
     cards: data.cards ?? base.cards,
     team: data.team ?? base.team,
+    teamName: (data.teamName ?? '').trim().slice(0, TEAM_NAME_LIMIT) || DEFAULT_TEAM_NAME,
     story: { ...freshStory(), ...(data.story ?? {}) },
   };
 }

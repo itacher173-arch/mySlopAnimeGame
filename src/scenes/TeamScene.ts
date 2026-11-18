@@ -58,10 +58,10 @@ export class TeamScene extends Phaser.Scene {
       }
       this.content.add(
         this.add
-          .text(x, SLOT_Y + SLOT_H / 2 + 22, i === 0 ? 'Лидер' : `Слот ${i + 1}`, {
+          .text(x, SLOT_Y + SLOT_H / 2 + 22, `Слот ${i + 1}`, {
             fontFamily: FONT,
             fontSize: '20px',
-            color: i === 0 ? '#ffe066' : '#ffffff',
+            color: '#ffffff',
           })
           .setOrigin(0.5),
       );
@@ -76,7 +76,7 @@ export class TeamScene extends Phaser.Scene {
         view.setAlpha(0.55);
         view.add(
           this.add
-            .text(0, 0, inTeam === 0 ? 'Лидер' : `Слот ${inTeam + 1}`, { fontFamily: FONT, fontSize: '20px', color: '#ffffff' })
+            .text(0, 0, `Слот ${inTeam + 1}`, { fontFamily: FONT, fontSize: '20px', color: '#ffffff' })
             .setOrigin(0.5)
             .setStroke('#000000', 6),
         );

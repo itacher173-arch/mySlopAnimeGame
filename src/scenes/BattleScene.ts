@@ -1,17 +1,19 @@
 import Phaser from 'phaser';
+import { chainTier, nextCharge, SHIELD_CAP_RATIO, SKILL_CHARGE_MAX, techniqueDelay, techniqueHealRatio, techniqueShieldRatio, techniqueSplashRatio } from '../battle/chainTiers';
 import { BoardModel, type Pos } from '../battle/BoardModel';
 import { BOARD_COLS, BOARD_ROWS, BOARD_X, BOARD_Y, CELL, FONT, GAME_H, GAME_W } from '../config';
 import { REWARD_LOSS, REWARD_WIN, cardStats } from '../core/progression';
 import { Save } from '../core/SaveManager';
 import { applyStageWin, starRules, type JoinedHero, type StageResult } from '../core/story';
 import { CARDS, type CardDef } from '../data/cards';
-import { ELEMENT_COLOR, ELEMENT_NAME, elementMultiplier, type Element } from '../data/elements';
+import { SKILLS, type GuardMode, type SkillEffect } from '../data/skills';
+import { ELEMENTS, ELEMENT_COLOR, ELEMENT_NAME, elementMultiplier, type Element } from '../data/elements';
 import { ENEMIES, type EnemyDef } from '../data/enemies';
 import { STAGES, STAR_HP_RATIO, type StageDef } from '../data/story';
 import { iconText } from '../ui/icons';
 import { coverImage } from '../ui/images';
 import { offerReason, teamOffer } from '../ui/teamOffer';
-import { button, cardView } from '../ui/widgets';
+import { button, cardView, hex } from '../ui/widgets';
 import { STONE_SIZE } from './BootScene';
 
 type Stone = Phaser.GameObjects.Image;
@@ -20,11 +22,24 @@ type Sprite = Phaser.GameObjects.Image | Phaser.GameObjects.Container;
 interface Unit {
   def: CardDef;
   atk: number;
+  hp: number;
+  /** Высота спрайта — для зоны тапа. */
+  h: number;
   sprite: Sprite;
   x: number;
   y: number;
   /** Центр спрайта по вертикали — сюда летят камни. */
   cy: number;
+  /** Заряд навыка в текущем бою, 0–SKILL_CHARGE_MAX. */
+  charge: number;
+  maxHp: number;
+  /** Верх шкалы — зона тапа захватывает полоску и заряд. */
+  top: number;
+  hpBar: Phaser.GameObjects.Rectangle;
+  hpBack: Phaser.GameObjects.Rectangle;
+  pips: Phaser.GameObjects.Arc[];
+  glow: Phaser.GameObjects.Ellipse;
+  elementIcon: Phaser.GameObjects.Image;
 }
 
 /** Враг на поле. Слот — индекс в раскладке волны, по нему же призыв ищет свободное место. */
@@ -57,6 +72,8 @@ const PICK_RADIUS = 0.42;
 const FIELD_H = 636;
 const HORIZON_Y = 330;
 const TEAM_HP_Y = 648;
+const HERO_BAR_W = 56;
+const HERO_BAR_H = 12;
 const UNIT_H = 170;
 /** Позиции ступней героев: задний ряд выше, передний ниже. */
 const TEAM_SLOTS = [
@@ -87,7 +104,6 @@ const FOE_UI_RIGHT = FOE_BAR_W / 2 + 42;
 const FOE_UI_GAP = 40;
 const QUICK_WAVES = [['sukuna']];
 /** Значки стихий — полоса под полем боя, каждый под своим героем: так они не закрывают лица соседей. */
-const BADGE_Y = 624;
 const BADGE_DEPTH = 10;
 
 export class BattleScene extends Phaser.Scene {
@@ -104,8 +120,10 @@ export class BattleScene extends Phaser.Scene {
   private team: Unit[] = [];
   private teamMaxHp = 0;
   private teamHp = 0;
-  private teamHpBar!: Phaser.GameObjects.Rectangle;
-  private teamHpText!: Phaser.GameObjects.Text;
+  private teamShield = 0;
+  /** Сколько следующих атак врагов полностью поглощает «Бесконечность». */
+  private attackBlocks = 0;
+  private shieldText!: Phaser.GameObjects.Text;
 
   /** Этап сюжета; null — быстрый бой против Сукуны. */
   private stage: StageDef | null = null;
@@ -165,6 +183,7 @@ export class BattleScene extends Phaser.Scene {
     this.waveIndex = 0;
     this.moves = 0;
     this.outcome = null;
+    this.attackBlocks = 0;
 
     this.drawBackground();
     this.createHeader();
@@ -228,6 +247,7 @@ export class BattleScene extends Phaser.Scene {
       .setOrigin(1, 0)
       .setStroke('#000000', 5);
     this.createPauseButton();
+    this.createElementHelpButton();
   }
 
   private createPauseButton(): void {
@@ -268,6 +288,104 @@ export class BattleScene extends Phaser.Scene {
     ];
   }
 
+  private createElementHelpButton(): void {
+    const btn = this.add.container(26, 520).setDepth(FOE_UI_DEPTH);
+    btn.add([this.add.circle(0, 0, 26, 0x000000, 0.6).setStrokeStyle(3, 0xffffff, 0.9)]);
+    btn.add(this.add.text(0, 0, '?', { fontFamily: FONT, fontSize: '34px', color: '#ffe066' }).setOrigin(0.5).setStroke('#000000', 5));
+    btn.setSize(60, 60).setInteractive({ useHandCursor: true });
+    btn.on('pointerup', () => this.openElementHelp());
+  }
+
+  private openElementHelp(): void {
+    if (this.paused || this.pauseLayer.length || this.outcome) return;
+    this.paused = true;
+    this.tweens.pauseAll();
+    this.time.paused = true;
+    this.cancelChain();
+
+    const close = () => {
+      this.pauseLayer.forEach((o) => o.destroy());
+      this.pauseLayer = [];
+      this.paused = false;
+      this.tweens.resumeAll();
+      this.time.paused = false;
+    };
+
+    const cx = GAME_W / 2;
+    const panelW = 620;
+    const rowH = 120;
+    const panelH = 90 + ELEMENTS.length * rowH + 70;
+
+    const effectText: Record<Element, string> = {
+      fire: 'чистый урон',
+      dark: 'чистый урон',
+      water: 'лечит команду',
+      light: 'лечит команду',
+      earth: 'создаёт щит команде',
+    };
+
+    const layer: Phaser.GameObjects.GameObject[] = [
+      this.add.rectangle(cx, GAME_H / 2, GAME_W, GAME_H, 0x000000, 0.75).setDepth(200).setInteractive(),
+      this.add
+        .rectangle(cx, GAME_H / 2, panelW, panelH, 0x1a1530, 0.96)
+        .setStrokeStyle(3, 0xffe066, 0.9)
+        .setDepth(201),
+      this.add
+        .text(cx, GAME_H / 2 - panelH / 2 + 42, 'Стихии и их эффекты', { fontFamily: FONT, fontSize: '34px', color: '#ffe066' })
+        .setOrigin(0.5, 0.5)
+        .setStroke('#000000', 7)
+        .setDepth(202),
+    ];
+
+    let rowY = GAME_H / 2 - panelH / 2 + 90;
+    for (const e of ELEMENTS) {
+      const strong = (Object.keys(ELEMENT_NAME) as Element[]).filter((f) => elementMultiplier(e, f) > 1);
+      const weakTo = (Object.keys(ELEMENT_NAME) as Element[]).filter((f) => elementMultiplier(f, e) > 1);
+      const color = hex(ELEMENT_COLOR[e]);
+      const matchup = [
+        strong.length ? `Сильный против: ${strong.map((f) => ELEMENT_NAME[f]).join(', ')}` : '',
+        weakTo.length ? `Уязвим к: ${weakTo.map((f) => ELEMENT_NAME[f]).join(', ')}` : '',
+      ]
+        .filter(Boolean)
+        .join('   ·   ');
+
+      const top = rowY - rowH / 2 + 26;
+      layer.push(
+        this.add.rectangle(cx, rowY, panelW - 40, rowH - 16, 0x241a3a, 0.8).setStrokeStyle(2, ELEMENT_COLOR[e], 0.8).setDepth(202),
+        this.add.image(cx - panelW / 2 + 46, rowY, `stone_${e}`).setScale(0.55).setDepth(203),
+        this.add
+          .text(cx - panelW / 2 + 120, top, ELEMENT_NAME[e], { fontFamily: FONT, fontSize: '30px', color })
+          .setOrigin(0, 0.5)
+          .setStroke('#000000', 6)
+          .setDepth(203),
+        this.add
+          .text(cx - panelW / 2 + 120, rowY - rowH / 2 + 62, matchup, {
+            fontFamily: FONT,
+            fontSize: '22px',
+            color: '#b9aedd',
+            align: 'left',
+            wordWrap: { width: panelW - 300, useAdvancedWrap: true },
+          })
+          .setOrigin(0, 0.5)
+          .setStroke('#000000', 4)
+          .setDepth(203),
+        this.add
+          .text(cx - panelW / 2 + 120, rowY - rowH / 2 + 92, `Эффект (5+ камней): ${effectText[e]}`, {
+            fontFamily: FONT,
+            fontSize: '24px',
+            color: '#ffe066',
+          })
+          .setOrigin(0, 0.5)
+          .setStroke('#000000', 4)
+          .setDepth(203),
+      );
+      rowY += rowH;
+    }
+
+    layer.push(button(this, cx, rowY + 30, 260, 70, 'Закрыть', close).setDepth(202));
+    this.pauseLayer = layer;
+  }
+
   // ---------- враги и волны ----------
 
   private spawnWave(animate: boolean): void {
@@ -296,18 +414,21 @@ export class BattleScene extends Phaser.Scene {
     root.add([this.add.ellipse(0, 0, Math.max(90, w * 0.8), Math.max(18, h * 0.09), 0x000000, 0.4), sprite]);
     this.breathe(sprite);
 
-    // Маленькая полоска HP над головой: значок стихии, полоска, кружок с ходами до атаки.
-    const barY = -h - 18;
+    // Полоска над головой: значок стихии слева, затем HP и ходы до атаки.
+    const barY = -h - 36;
     const ui = this.add.container(Math.min(x, GAME_W - FOE_UI_RIGHT), y).setDepth(FOE_UI_DEPTH);
+    const iconX = -FOE_BAR_W / 2 - 20;
     const hpBar = this.add.rectangle(-FOE_BAR_W / 2 + 2, barY, FOE_BAR_W - 4, 10, 0xd8323c).setOrigin(0, 0.5);
     const cdText = this.add
       .text(FOE_BAR_W / 2 + 22, barY, String(def.cooldown), { fontFamily: FONT, fontSize: '20px', color: '#ffffff' })
       .setOrigin(0.5)
       .setStroke('#000000', 4);
+    const elementIcon = this.add.image(iconX, barY, `stone_${def.element}`).setDisplaySize(32, 32);
     ui.add([
       this.add.rectangle(0, barY, FOE_BAR_W, 14, 0x000000, 0.75).setStrokeStyle(2, 0xffffff, 0.7),
       hpBar,
-      this.add.image(-FOE_BAR_W / 2 - 16, barY, `stone_${def.element}`).setScale(0.3),
+      this.add.circle(iconX, barY, 18, 0x140e22, 0.85),
+      elementIcon,
       this.add.circle(FOE_BAR_W / 2 + 22, barY, 17, 0x000000, 0.75).setStrokeStyle(3, 0xff5a5a),
       cdText,
     ]);
@@ -341,7 +462,7 @@ export class BattleScene extends Phaser.Scene {
    * чтобы бар жабы не ложился на слизня, а бар гоблина — на туловище хобгоблина.
    */
   private layoutFoeUi(): void {
-    const natural = (f: Foe) => f.y - f.h - 18;
+    const natural = (f: Foe) => f.y - f.h - 36;
     const placed: { l: number; r: number; y: number; top: number }[] = [];
     const bodies = this.foes.map((f) => ({ f, l: f.x - f.w / 2, r: f.x + f.w / 2, t: f.y - f.h, b: f.y }));
     for (const f of [...this.foes].sort((a, b) => natural(b) - natural(a))) {
@@ -508,17 +629,65 @@ export class BattleScene extends Phaser.Scene {
       this.add.ellipse(x, y, hover ? 80 : 110, hover ? 16 : 22, 0x000000, hover ? 0.3 : 0.4).setDepth(y / 100 - 0.01);
       const sprite = this.unitSprite(`unit_${def.id}`, x, y - hover, h, def.element, def.name, !!def.spriteFacesLeft);
       sprite.setDepth(y / 100);
-      this.add.image(x, BADGE_Y, `stone_${def.element}`).setScale(0.3).setDepth(BADGE_DEPTH);
+      const glow = this.add
+        .ellipse(x, y - hover - h * 0.45, 120, h * 0.95, ELEMENT_COLOR[def.element], 0.45)
+        .setDepth(y / 100 - 0.02)
+        .setVisible(false);
+      this.tweens.add({ targets: glow, alpha: 0.18, duration: 520, yoyo: true, repeat: -1 });
+      const head = y - hover - h;
+      const barY = head - 34;
+      const barX = x + 12;
+      const elementIcon = this.add
+        .image(barX - HERO_BAR_W / 2 - 16, barY, `stone_${def.element}`)
+        .setDisplaySize(24, 24)
+        .setDepth(BADGE_DEPTH);
+      const hpBack = this.add
+        .rectangle(barX, barY, HERO_BAR_W, HERO_BAR_H, 0x000000, 0.75)
+        .setStrokeStyle(2, 0xffffff, 0.8)
+        .setDepth(BADGE_DEPTH);
+      const hpBar = this.add
+        .rectangle(barX - (HERO_BAR_W - 4) / 2, barY, HERO_BAR_W - 4, HERO_BAR_H - 4, 0x3fcf5a)
+        .setOrigin(0, 0.5)
+        .setDepth(BADGE_DEPTH + 0.1);
+      const pips = Array.from({ length: SKILL_CHARGE_MAX }, (_, pip) =>
+        this.add
+          .circle(x + (pip - 1) * 18, barY + 18, 8, 0x1a1428)
+          .setStrokeStyle(3, 0xffffff, 0.9)
+          .setDepth(BADGE_DEPTH),
+      );
       if (hover) this.tweens.add({ targets: sprite, y: sprite.y - 8, duration: 1100 + Math.random() * 300, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
       else this.breathe(sprite);
-      this.team.push({ def, atk: stats.atk, sprite, x, y, cy: y - hover - h / 2 });
+      const unit: Unit = {
+        def,
+        atk: stats.atk,
+        hp: stats.hp,
+        maxHp: stats.hp,
+        h,
+        sprite,
+        x,
+        y,
+        cy: y - hover - h / 2,
+        top: barY - 16,
+        charge: 0,
+        hpBar,
+        hpBack,
+        pips,
+        glow,
+        elementIcon,
+      };
+      this.team.push(unit);
+      this.refreshCharge(unit);
     });
 
     this.teamMaxHp = maxHp;
     this.teamHp = this.teamMaxHp;
-    const { bar, text } = this.hpBar(14, TEAM_HP_Y, GAME_W - 28, 22, 0x3fcf5a);
-    this.teamHpBar = bar;
-    this.teamHpText = text;
+    this.teamShield = 0;
+    this.shieldText = this.add
+      .text(GAME_W / 2, TEAM_HP_Y, '', { fontFamily: FONT, fontSize: '22px', color: '#9ecbff' })
+      .setOrigin(0.5)
+      .setStroke('#000000', 5)
+      .setDepth(BADGE_DEPTH)
+      .setVisible(false);
     this.updateTeamHp(false);
   }
 
@@ -564,6 +733,11 @@ export class BattleScene extends Phaser.Scene {
       // Второй палец не начинает новую цепочку и не сбрасывает уже ведущуюся.
       if (this.dragId !== null && p.id !== this.dragId) return;
       if (p.y < FIELD_H) {
+        const hero = this.heroAt(p.x, p.y);
+        if (hero) {
+          if (!this.busy && hero.charge >= SKILL_CHARGE_MAX) void this.castSkill(hero);
+          return;
+        }
         const foe = this.foeAt(p.x, p.y);
         if (foe && foe !== this.target) this.selectTarget(foe);
         return;
@@ -651,8 +825,9 @@ export class BattleScene extends Phaser.Scene {
     }
 
     const last = this.chain[this.chain.length - 1];
+    const tier = chainTier(this.chain.length);
     this.chainBadge
-      .setText(String(this.chain.length))
+      .setText(ready ? `${this.chain.length} ${tier.name}` : String(this.chain.length))
       .setColor(ready ? '#ffe066' : '#ffffff')
       .setPosition(cellX(last.c) + 30, cellY(last.r) - 34)
       .setVisible(true);
@@ -690,9 +865,12 @@ export class BattleScene extends Phaser.Scene {
     this.busy = true;
     this.moves++;
     this.updateInfo();
-    const attackers = this.team.filter((u) => u.def.element === element);
+    const allies = this.team.filter((u) => u.def.element === element);
+    const attackers = allies.filter((u) => u.hp > 0);
     const target = attackers[0];
-    if (!target) this.floatText(GAME_W / 2, BOARD_Y - 20, 'Нет героя этой стихии', 0xffffff, 30);
+    if (!target) {
+      this.floatText(GAME_W / 2, BOARD_Y - 20, allies.length ? 'Герой без сознания' : 'Нет героя этой стихии', 0xffffff, 30);
+    }
 
     // Камни улетают к герою своей стихии (а без него просто тают), параллельно поле досыпается сверху.
     const absorbs = chain.map((p, i) => {
@@ -715,10 +893,16 @@ export class BattleScene extends Phaser.Scene {
 
     await Promise.all(absorbs);
     this.guard();
+    let lastDamage = 0;
     for (const unit of attackers) {
       if (this.foes.length === 0) break;
-      await this.heroAttack(unit, chain.length);
+      lastDamage = await this.heroAttack(unit, chain.length);
       this.guard();
+    }
+    if (attackers.length > 0) {
+      await this.applyTechnique(element, chain.length, lastDamage);
+      this.guard();
+      this.gainCharge(element, chain.length);
     }
     await refill;
     this.guard();
@@ -728,7 +912,7 @@ export class BattleScene extends Phaser.Scene {
       await this.nextWave();
     } else {
       await this.enemyTurn();
-      if (this.teamHp <= 0) return this.finish(false);
+      if (this.living().length === 0) return this.finish(false);
     }
     this.guard();
 
@@ -757,13 +941,14 @@ export class BattleScene extends Phaser.Scene {
     return this.tween({ targets: s, y: cellY(toR), duration: 140 + distance * 60, ease: 'Bounce.easeOut' });
   }
 
-  private async heroAttack(unit: Unit, chainLength: number): Promise<void> {
+  private async heroAttack(unit: Unit, chainLength: number): Promise<number> {
     const foe = this.currentTarget();
-    if (!foe) return;
+    if (!foe) return 0;
     const mult = elementMultiplier(unit.def.element, foe.def.element);
-    const guard = this.guardMult(foe);
     const lengthBonus = 1 + CHAIN_LENGTH_BONUS * (chainLength - MIN_CHAIN);
-    const dmg = Math.round(unit.atk * chainLength * 0.5 * lengthBonus * mult * guard);
+    const tier = chainTier(chainLength).damageMultiplier;
+    const dmg = Math.round(unit.atk * chainLength * 0.5 * mult * lengthBonus * this.guardMult(foe) * tier);
+
     const color = ELEMENT_COLOR[unit.def.element];
 
     await this.tween({ targets: unit.sprite, x: unit.x + 50, duration: 120, ease: 'Quad.easeOut' });
@@ -794,15 +979,190 @@ export class BattleScene extends Phaser.Scene {
     this.time.delayedCall(400, () => trail.destroy());
 
     this.burst(to.x, to.y, color);
+    await this.dealDamage(foe, dmg, mult > 1 ? 0xffeb3b : color, mult > 1);
+    this.guard();
+    return dmg;
+  }
+
+  /** Стихийный приём цепочки из 10+. Огонь бьёт всех долей последней атаки. */
+  private async applyTechnique(element: Element, chainLength: number, lastDamage: number): Promise<void> {
+    if (!chainTier(chainLength).technique) return;
+    this.floatText(GAME_W / 2, 200, chainTier(chainLength).name, ELEMENT_COLOR[element], 40);
+    const splashRatio = techniqueSplashRatio(element);
+    if (splashRatio > 0 && lastDamage > 0) {
+      const splash = Math.max(1, Math.round(lastDamage * splashRatio));
+      for (const foe of [...this.foes]) {
+        if (!this.foes.includes(foe)) continue;
+        await this.dealDamage(foe, splash, ELEMENT_COLOR[element], false);
+        this.guard();
+      }
+    }
+    const healRatio = techniqueHealRatio(element);
+    if (healRatio > 0) this.healTeam(healRatio);
+    const shieldRatio = techniqueShieldRatio(element);
+    if (shieldRatio > 0) this.addShield(Math.round(this.teamMaxHp * shieldRatio));
+    const delay = techniqueDelay(element);
+    if (delay > 0) this.delayFoes([...this.foes], delay);
+  }
+
+  private gainCharge(element: Element, chainLength: number): void {
+    for (const unit of this.team) {
+      if (unit.def.element !== element || unit.hp <= 0) continue;
+      const before = unit.charge;
+      unit.charge = nextCharge(unit.charge, chainLength);
+      this.refreshCharge(unit);
+      if (before < SKILL_CHARGE_MAX && unit.charge >= SKILL_CHARGE_MAX) {
+        this.floatText(unit.x, unit.cy, 'Навык готов', ELEMENT_COLOR[element], 26);
+      }
+    }
+  }
+
+  private refreshCharge(unit: Unit): void {
+    const ready = unit.charge >= SKILL_CHARGE_MAX;
+    unit.glow.setVisible(ready);
+    unit.pips.forEach((pip, i) => {
+      pip.setFillStyle(i < unit.charge ? ELEMENT_COLOR[unit.def.element] : 0x1a1428, 1);
+      pip.setStrokeStyle(2, ready ? 0xffe066 : 0xffffff, 0.85);
+    });
+  }
+
+  /** Герой под пальцем. Передний ряд перекрывает задний. */
+  private heroAt(px: number, py: number): Unit | null {
+    const front = [...this.team].sort((a, b) => b.y - a.y);
+    return front.find((u) => u.hp > 0 && Math.abs(px - u.x) <= 58 && py <= u.y + 28 && py >= u.top) ?? null;
+  }
+
+  /** Свободное действие: ход не тратится и враги не отвечают. */
+  private async castSkill(unit: Unit): Promise<void> {
+    const skill = SKILLS[unit.def.skill];
+    if (!skill || unit.hp <= 0 || unit.charge < SKILL_CHARGE_MAX || this.busy || this.paused || this.outcome) return;
+    const needsFoe = skill.effect.kind === 'damage' || skill.effect.kind === 'delay';
+    if (needsFoe && this.foes.length === 0) return;
+
+    const epoch = this.epoch;
+    this.busy = true;
+    this.flow = epoch;
+    unit.charge = 0;
+    this.refreshCharge(unit);
+    this.floatText(unit.x, unit.cy - 30, skill.name, 0xffe066, 28);
+    try {
+      await this.applySkill(unit, skill.effect);
+      this.guard();
+      if (this.foes.length === 0) {
+        if (this.waveIndex >= this.waves.length - 1) return this.finish(true);
+        await this.nextWave();
+      }
+      if (!this.model.hasChain()) await this.reshuffle();
+    } catch (e) {
+      if (e instanceof BattleGone || epoch !== this.epoch) return;
+      console.error(e);
+    }
+    if (epoch !== this.epoch || this.outcome) return;
+    this.busy = false;
+  }
+
+  private async applySkill(unit: Unit, effect: SkillEffect): Promise<void> {
+    if (effect.kind === 'damage') {
+      const hits = effect.hits ?? 1;
+      for (let hit = 0; hit < hits; hit++) {
+        const foe = this.currentTarget();
+        if (!foe) return;
+        const dmg = this.skillDamage(unit, foe, effect.multiplier, effect.guard ?? 'normal');
+        this.flash(unit.sprite, ELEMENT_COLOR[unit.def.element]);
+        await this.dealDamage(foe, dmg, ELEMENT_COLOR[unit.def.element], false);
+        this.guard();
+      }
+      return;
+    }
+    if (effect.kind === 'heal') {
+      this.healTeam(effect.ratio);
+      return;
+    }
+    if (effect.kind === 'shield') {
+      this.addShield(Math.round(this.teamMaxHp * effect.ratio));
+      return;
+    }
+    if (effect.kind === 'delay') {
+      const targets = effect.all ? [...this.foes] : [this.currentTarget()].filter((foe): foe is Foe => !!foe);
+      this.delayFoes(targets, effect.turns);
+      return;
+    }
+    if (effect.kind === 'convert') {
+      this.convertStones(unit.def.element, effect.count);
+      return;
+    }
+    this.attackBlocks++;
+    this.floatText(unit.x, unit.y - unit.h, 'Бесконечность', 0xb9f6ff, 28);
+  }
+
+  private skillDamage(unit: Unit, foe: Foe, multiplier: number, guardMode: GuardMode): number {
+    let guard = this.guardMult(foe);
+    if (guardMode === 'ignore') guard = 1;
+    else if (guardMode === 'half') guard = 1 - (1 - guard) / 2;
+    const element = elementMultiplier(unit.def.element, foe.def.element);
+    return Math.max(1, Math.round(unit.atk * multiplier * element * guard));
+  }
+
+  private async dealDamage(foe: Foe, dmg: number, color: number, advantage: boolean): Promise<void> {
     foe.hp = Math.max(0, foe.hp - dmg);
     this.flash(foe.sprite, 0xffffff);
     this.tweens.add({ targets: foe.root, x: foe.x + 14, duration: 50, yoyo: true, repeat: 1 });
-    const label = guard < 1 ? `${dmg} щит` : mult > 1 ? `${dmg}!` : `${dmg}`;
-    this.floatText(to.x + Phaser.Math.Between(-40, 40), to.y - 40, label, guard < 1 ? 0x8fd3ff : color, mult > 1 ? 54 : 42);
+    this.floatText(foe.x + Phaser.Math.Between(-30, 30), foe.y - foe.h * 0.55, advantage ? `${dmg}!` : `${dmg}`, color, advantage ? 54 : 42);
     this.updateFoeHp(foe);
     if (foe.hp <= 0) await this.killFoe(foe);
-    else await this.wait(250);
-    this.guard();
+    else await this.wait(180);
+  }
+
+  /** Лечит каждого живого героя на долю его собственного максимума. */
+  private healTeam(ratio: number): void {
+    let healed = 0;
+    for (const unit of this.living()) {
+      const amount = Math.min(unit.maxHp - unit.hp, Math.round(unit.maxHp * ratio));
+      if (amount <= 0) continue;
+      unit.hp += amount;
+      healed += amount;
+      this.floatText(unit.x, unit.cy, `+${amount}`, 0x3fcf5a, 28);
+    }
+    if (healed > 0) this.updateTeamHp(true);
+  }
+
+  private addShield(amount: number): void {
+    const cap = Math.round(this.teamMaxHp * SHIELD_CAP_RATIO);
+    const added = Math.max(0, Math.min(amount, cap - this.teamShield));
+    if (added <= 0) return;
+    this.teamShield += added;
+    this.updateTeamHp(false);
+    this.floatText(212, 420, `+${added} Щит`, 0x6fb7ff, 42);
+  }
+
+  private delayFoes(foes: Foe[], turns: number): void {
+    for (const foe of foes) {
+      if (!this.foes.includes(foe)) continue;
+      foe.cd += turns;
+      this.updateFoeCd(foe);
+      this.floatText(foe.x, foe.y - foe.h - 36, `+${turns}`, 0x9ad7ff, 36);
+    }
+  }
+
+  /** Меняет случайные камни другого цвета на стихию навыка. */
+  private convertStones(element: Element, count: number): void {
+    const pool: Pos[] = [];
+    for (let r = 0; r < BOARD_ROWS; r++) {
+      for (let c = 0; c < BOARD_COLS; c++) if (this.model.grid[r][c] !== element) pool.push({ r, c });
+    }
+    for (let i = pool.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [pool[i], pool[j]] = [pool[j], pool[i]];
+    }
+    let changed = 0;
+    for (const pos of pool) {
+      if (changed >= count) break;
+      this.model.grid[pos.r][pos.c] = element;
+      const stone = this.stones[pos.r][pos.c];
+      stone?.setTexture(`stone_${element}`);
+      changed++;
+    }
+    if (changed > 0) this.floatText(GAME_W / 2, BOARD_Y - 24, `${changed}`, ELEMENT_COLOR[element], 36);
   }
 
   private async enemyTurn(): Promise<void> {
@@ -817,7 +1177,7 @@ export class BattleScene extends Phaser.Scene {
       if (foe.cd > 0) continue;
       await this.foeAttack(foe);
       this.guard();
-      if (this.teamHp <= 0) return;
+      if (this.living().length === 0) return;
     }
     await this.wait(150);
     this.guard();
@@ -843,12 +1203,29 @@ export class BattleScene extends Phaser.Scene {
     const boss = foe.def.rank === 'boss';
     await this.tween({ targets: foe.root, x: foe.x - (boss ? 140 : 90), duration: 160, ease: 'Quad.easeIn' });
     this.guard();
+    if (this.attackBlocks > 0) {
+      this.attackBlocks--;
+      this.floatText(220, 420, 'Бесконечность', 0xb9f6ff, 40);
+      await this.tween({ targets: foe.root, x: foe.x, duration: 260, ease: 'Quad.easeOut' });
+      this.guard();
+      foe.cd = foe.def.cooldown;
+      this.updateFoeCd(foe);
+      await this.wait(200);
+      this.guard();
+      return;
+    }
+    const target = this.attackTarget();
+    if (!target) return;
     this.cameras.main.shake(250, boss ? 0.012 : 0.006);
     this.cameras.main.flash(150, 120, 0, 0);
-    for (const u of this.team) this.flash(u.sprite, 0xff3030);
-    this.teamHp = Math.max(0, this.teamHp - foe.def.atk);
-    this.floatText(220, 420, `-${foe.def.atk}`, 0xff4040, 52);
-    this.updateTeamHp(true);
+    this.flash(target.sprite, 0xff3030);
+    // Общий щит по-прежнему закрывает команду и сгорает раньше личного HP.
+    const absorb = Math.min(foe.def.atk, this.teamShield);
+    this.teamShield -= absorb;
+    const realDmg = foe.def.atk - absorb;
+    if (absorb > 0) this.floatText(target.x, target.cy - 28, `Щит -${absorb}`, 0x6fb7ff, 32);
+    if (realDmg > 0) this.hurtUnit(target, realDmg);
+    else this.updateTeamHp(false);
     await this.tween({ targets: foe.root, x: foe.x, duration: 260, ease: 'Quad.easeOut' });
     this.guard();
     foe.cd = foe.def.cooldown;
@@ -1075,16 +1452,47 @@ export class BattleScene extends Phaser.Scene {
   private hpBar(x: number, y: number, w: number, h: number, color: number) {
     this.add.rectangle(x, y, w, h, 0x000000, 0.7).setOrigin(0).setStrokeStyle(2, 0xffffff, 0.6);
     const bar = this.add.rectangle(x + 2, y + 2, w - 4, h - 4, color).setOrigin(0);
-    const text = this.add
-      .text(x + w / 2, y + h / 2, '', { fontFamily: FONT, fontSize: `${h - 4}px`, color: '#ffffff' })
-      .setOrigin(0.5)
+    const hpText = this.add
+      .text(x + 8, y + h / 2, '', { fontFamily: FONT, fontSize: `${h - 4}px`, color: '#ffffff' })
+      .setOrigin(0, 0.5)
       .setStroke('#000000', 4);
-    return { bar, text };
+    return { bar, text: hpText };
+  }
+
+  private living(): Unit[] {
+    return this.team.filter((unit) => unit.hp > 0);
+  }
+
+  /** Враг бьёт ближайшего к себе живого героя — передний ряд раньше заднего. */
+  private attackTarget(): Unit | null {
+    const living = this.living();
+    if (living.length === 0) return null;
+    return [...living].sort((a, b) => b.y - a.y || b.x - a.x)[0];
+  }
+
+  private hurtUnit(unit: Unit, amount: number): void {
+    unit.hp = Math.max(0, unit.hp - amount);
+    this.floatText(unit.x, unit.cy, `-${amount}`, 0xff4040, 36);
+    if (unit.hp <= 0) this.knockOut(unit);
+    this.updateTeamHp(true);
+  }
+
+  private knockOut(unit: Unit): void {
+    unit.charge = 0;
+    unit.glow.setVisible(false);
+    unit.sprite.setAlpha(0.35);
+    unit.elementIcon.setAlpha(0.35);
+    unit.hpBar.setAlpha(0.45);
+    unit.hpBack.setAlpha(0.45);
+    unit.pips.forEach((pip) => pip.setAlpha(0.35));
+    this.refreshCharge(unit);
   }
 
   private updateTeamHp(animate: boolean): void {
-    this.setBar(this.teamHpBar, this.teamHp / this.teamMaxHp, animate);
-    this.teamHpText.setText(`HP ${this.teamHp} / ${this.teamMaxHp}`);
+    this.teamHp = this.team.reduce((sum, unit) => sum + Math.max(0, unit.hp), 0);
+    for (const unit of this.team) this.setBar(unit.hpBar, Math.max(0, unit.hp) / unit.maxHp, animate);
+    this.shieldText.setVisible(this.teamShield > 0);
+    if (this.teamShield > 0) this.shieldText.setText(`Щит ${this.teamShield}`);
   }
 
   private setBar(bar: Phaser.GameObjects.Rectangle, ratio: number, animate: boolean): void {
@@ -1168,8 +1576,4 @@ function hpPercent(hp: number, max: number, threshold: number): string {
 
 function rankWeight(def: EnemyDef): number {
   return def.rank === 'boss' ? 2 : def.rank === 'elite' ? 1 : 0;
-}
-
-function hex(color: number): string {
-  return `#${color.toString(16).padStart(6, '0')}`;
 }

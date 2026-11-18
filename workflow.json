@@ -1,0 +1,45 @@
+{
+  "name": "Anime Game Design Workflow",
+  "description": "Structured workflow for developing an anime-style game, covering concept art, character design, world building, narrative scripting, and gameplay mechanics.",
+  "phases": [
+    {
+      "title": "Concept & Core Vision",
+      "detail": "Define the high-level concept, target audience, and unique selling points of the game."
+    },
+    {
+      "title": "World Building & Setting",
+      "detail": "Design the game world with lore, factions, locations, magic/supernatural systems, and history."
+    },
+    {
+      "title": "Character Design",
+      "detail": "Develop character profiles including backstories, personalities, abilities, and visual design notes."
+    },
+    {
+      "title": "Narrative Structure",
+      "detail": "Outline the main story arcs, branching paths, dialogue trees, and script structure."
+    },
+    {
+      "title": "Gameplay Mechanics",
+      "detail": "Design combat systems, progression loops, economy, UI/UX considerations, and core mechanics."
+    },
+    {
+      "title": "Asset Planning",
+      "detail": "Identify all required assets (art, audio, 3D models) and production timeline."
+    },
+    {
+      "title": "Script & Dialogue",
+      "detail": "Write and localize dialogue scripts, voice lines, and narration text."
+    },
+    {
+      "title": "Technical Implementation",
+      "detail": "Plan engine integration, level scripting, system architecture, and performance targets."
+    }
+  ],
+  "args": {
+    "files": [],
+    "characters": {},
+    "worldData": {},
+    "narrativeDrafts": []
+  },
+  "run_in_background": true
+}
